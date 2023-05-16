@@ -1,0 +1,112 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'xtask'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=xtask",
+                    "--package=xtask"
+                ],
+                "filter": {
+                    "name": "xtask",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'xtask'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=xtask",
+                    "--package=xtask"
+                ],
+                "filter": {
+                    "name": "xtask",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'duro_console'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=duro_console"
+                ],
+                "filter": {
+                    "name": "duro_console",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'duro_console'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=duro_console",
+                    "--package=duro_console"
+                ],
+                "filter": {
+                    "name": "duro_console",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'duro_console'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=duro_console",
+                    "--package=duro_console"
+                ],
+                "filter": {
+                    "name": "duro_console",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "cppvsdbg",
+            "request": "attach",
+            "name": "Debug the plugin inside a DAW",
+            "processId": "${command:pickProcess}",
+            "internalConsoleOptions": "openOnSessionStart",
+            "symbolOptions": {
+                "searchPaths": ["${workspaceFolder}/target/profiling"],
+                "searchMicrosoftSymbolServer": false
+            }
+        }
+    ]
+}

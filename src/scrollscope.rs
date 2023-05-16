@@ -1,7 +1,7 @@
 /**************************************************
  * Scrollscope Oscilloscpe by Ardura
  **************************************************/
- use nih_plug::prelude::{util, Editor};
+ 
  use nih_plug_vizia::vizia::prelude::*;
 
 #[derive(Default, Clone, Lens)]

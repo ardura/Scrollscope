@@ -1,7 +1,8 @@
 //use crossbeam::atomic::AtomicCell;
 use atomic_float::AtomicF32;
 use nih_plug::prelude::{util, Editor};
-use nih_plug_vizia::vizia::vg::Color;
+use nih_plug_vizia::vizia::vg::renderer::Void;
+use nih_plug_vizia::vizia::vg::{Color, Canvas};
 use nih_plug_vizia::vizia::{prelude::*, vg};
 use nih_plug_vizia::widgets::*;
 use nih_plug_vizia::{assets, create_vizia_editor, ViziaState, ViziaTheming};
@@ -17,6 +18,7 @@ struct Data {
     /// Determines which parts of the GUI are visible, and in turn decides the GUI's size.
     params: Arc<GainParams>,
     in_meter: Arc<AtomicF32>,
+    osc_obj: Arc<Oscilloscope>,
 }
 
 impl Model for Data {}
@@ -39,6 +41,7 @@ pub(crate) fn create(
         Data {
             params: params.clone(),
             in_meter: in_meter.clone(),
+            osc_obj: osc_obj.clone(),
         }
         .build(cx);
 
@@ -56,21 +59,24 @@ pub(crate) fn create(
 
             PeakMeter::new(cx, Data::in_meter.map(|in_meter| util::gain_to_db(in_meter.load(Ordering::Relaxed))),Some(Duration::from_millis(600)),).min_width(Pixels(780.0));
 
-            Binding::new(cx, osc_obj, |cx, osc_obj| {
-                let (xvar,yvar)  = osc_obj.get_scale();
-                //cx.fill((0, 0, 0));
+            Binding::new(cx, Data::osc_obj, |cx, osc_obj| {
+                let canvas = Canvas::new();
+
+                let (xvar,yvar)  = osc_obj.get(cx).get_scale();
+
                 let line_width = 1.0;
                 let paint = vg::Paint::color(Color::black()).with_line_width(line_width);
                 let mut path = vg::Path::new();
-                // Draw the waveform
-                for (i, sample) in osc_obj.get_samples().iter().enumerate() {
-                    let x = i as f32 * xvar + osc_obj.get_scroll();
+
+                for (i, sample) in osc_obj.get(cx).get_samples().iter().enumerate() {
+                    let x = i as f32 * xvar + osc_obj.get(cx).get_scroll();
                     let y = sample * yvar;
 
                     path.move_to(x,y,);
                     path.line_to(x ,0.0);
                     
                     // TODO: Figure out how to draw our line for the oscilloscope since this section is wrong
+                    canvas.stroke_path(path, &paint);
                 }
             })
 

@@ -113,7 +113,7 @@ impl Plugin for Gain {
             self.params.clone(),
             self.in_meter.clone(),
             self.params.editor_state.clone(),
-            self.osc_obj.clone(),
+            Arc::new(self.osc_obj.clone()),
         )
     }
 

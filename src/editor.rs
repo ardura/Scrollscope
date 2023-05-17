@@ -6,7 +6,7 @@ use nih_plug_vizia::vizia::vg::{Color, Canvas};
 use nih_plug_vizia::vizia::{prelude::*, vg};
 use nih_plug_vizia::widgets::*;
 use nih_plug_vizia::{assets, create_vizia_editor, ViziaState, ViziaTheming};
-use crate::Oscilloscope;
+use crate::{Oscilloscope, scrollscope};
 use std::sync::atomic::{Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,25 +59,9 @@ pub(crate) fn create(
 
             PeakMeter::new(cx, Data::in_meter.map(|in_meter| util::gain_to_db(in_meter.load(Ordering::Relaxed))),Some(Duration::from_millis(600)),).min_width(Pixels(780.0));
 
-            Binding::new(cx, Data::osc_obj, |cx, osc_obj| {
-                let canvas = Canvas::new();
-
-                let (xvar,yvar)  = osc_obj.get(cx).get_scale();
-
-                let line_width = 1.0;
-                let paint = vg::Paint::color(Color::black()).with_line_width(line_width);
-                let mut path = vg::Path::new();
-
-                for (i, sample) in osc_obj.get(cx).get_samples().iter().enumerate() {
-                    let x = i as f32 * xvar + osc_obj.get(cx).get_scroll();
-                    let y = sample * yvar;
-
-                    path.move_to(x,y,);
-                    path.line_to(x ,0.0);
-                    
-                    // TODO: Figure out how to draw our line for the oscilloscope since this section is wrong
-                    canvas.stroke_path(path, &paint);
-                }
+            //Binding::new(cx, Data::osc_obj, |cx, osc_obj| {      })
+            scrollscope::Oscilloscope::new(cx, Data::osc_obj, |osc_obj| {
+                osc_obj.samples.clone()
             })
 
 

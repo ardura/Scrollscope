@@ -3,13 +3,10 @@
  **************************************************/
  
  use atomic_float::AtomicF32;
- use nih_plug::nih_debug_assert;
- use nih_plug::prelude::FloatRange;
- use nih_plug_vizia::vizia::prelude::*;
+  use nih_plug_vizia::vizia::prelude::*;
  use nih_plug_vizia::vizia::vg;
  use nih_plug_vizia::vizia::vg::{Color, Canvas};
- use std::sync::atomic::Ordering;
- use std::sync::{Arc, Mutex};
+ use std::sync::Arc;
 
 #[derive(Default, Clone, Lens)]
 pub struct Oscilloscope {
@@ -23,16 +20,16 @@ pub struct Oscilloscope {
 
 impl Oscilloscope {
     // Create a new Oscilloscope that will use our custom drawing code
-    pub fn new<Lens_x_scale, Lens_samples, Lens_scroll_x>(
+    pub fn new<LensXScale, LensSamples, LensScrollX>(
         cx: &mut Context,
-        x_scale: Lens_x_scale, 
-        scroll_x: Lens_scroll_x,
-        samples: Lens_samples
+        x_scale: LensXScale, 
+        scroll_x: LensScrollX,
+        samples: LensSamples
     ) -> Handle<Self> 
         where
-            Lens_x_scale: Lens<Target = Arc<AtomicF32>>,
-            Lens_samples: Lens<Target = Arc<Vec<AtomicF32>>>, 
-            Lens_scroll_x: Lens<Target = Arc<AtomicF32>>,
+        LensXScale: Lens<Target = Arc<AtomicF32>>,
+            LensSamples: Lens<Target = Arc<Vec<AtomicF32>>>, 
+            LensScrollX: Lens<Target = Arc<AtomicF32>>,
         {
             Self {
                 samples: samples.get(cx),
@@ -56,23 +53,9 @@ impl Oscilloscope {
             }
         }
         
-        pub fn get_samples(&self) -> &Vec<f32> {
-            &self.samples
-        }
-        
-        pub fn get_scale(&self) -> (f32, f32) {
-            (self.x_scale, self.y_scale)
-        }
-        
-        pub fn get_scroll(&self) -> f32 {
-            self.scroll_x
-        }
-        
         pub fn update_vals(&mut self, scroll_x: f32) {
-            self.scroll_x = scroll_x;
-        }
-
-        pub fn render(&self) {
+            
+            self.scroll_x = Arc::new(AtomicF32::new(scroll_x));
         }
     }
 
@@ -108,41 +91,3 @@ impl View for Oscilloscope {
 
 
 }
-
-/*
-pub fn add_sample(&mut self, sample: f32) {
-    self.samples.push(sample);
-    while self.samples.len() as f32 > self.width / self.x_scale {
-        self.samples.remove(0);
-    }
-}
-
-pub fn get_samples(&self) -> &Vec<f32> {
-    &self.samples
-}
-
-pub fn get_scale(&self) -> (f32, f32) {
-    (self.x_scale, self.y_scale)
-}
-
-pub fn get_scroll(&self) -> f32 {
-    self.scroll_x
-}
-
-pub fn update_vals(&mut self, scroll_x: f32) {
-    self.scroll_x = scroll_x;
-}
-
-pub fn render(&self) {
-//pub fn render(&self, cx: &mut Context) {
-    // Clear the canvas
-//    cx.fill((0, 0, 0));
-
-    // Draw the waveform
-    for (i, sample) in self.samples.iter().enumerate() {
-        let x = i as f32 * self.x_scale + self.scroll_x;
-        let y = sample * self.y_scale;
-        //cx.draw_line((x, 0), (x, y));
-    }
-}
-*/

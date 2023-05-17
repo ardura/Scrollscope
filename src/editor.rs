@@ -1,9 +1,7 @@
 //use crossbeam::atomic::AtomicCell;
 use atomic_float::AtomicF32;
 use nih_plug::prelude::{util, Editor};
-use nih_plug_vizia::vizia::vg::renderer::Void;
-use nih_plug_vizia::vizia::vg::{Color, Canvas};
-use nih_plug_vizia::vizia::{prelude::*, vg};
+use nih_plug_vizia::vizia::{prelude::*};
 use nih_plug_vizia::widgets::*;
 use nih_plug_vizia::{assets, create_vizia_editor, ViziaState, ViziaTheming};
 use crate::{Oscilloscope, scrollscope};
@@ -60,9 +58,9 @@ pub(crate) fn create(
             PeakMeter::new(cx, Data::in_meter.map(|in_meter| util::gain_to_db(in_meter.load(Ordering::Relaxed))),Some(Duration::from_millis(600)),).min_width(Pixels(780.0));
 
             //Binding::new(cx, Data::osc_obj, |cx, osc_obj| {      })
-            scrollscope::Oscilloscope::new(cx, Data::osc_obj, |osc_obj| {
-                osc_obj.samples.clone()
-            })
+            //scrollscope::Oscilloscope::new(cx, Data::osc_obj, |osc_obj| {
+                //osc_obj.samples.clone()
+            //});
 
 
         })

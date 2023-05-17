@@ -2,11 +2,11 @@
  * Scrollscope Oscilloscpe by Ardura
  **************************************************/
  
- use atomic_float::AtomicF32;
-  use nih_plug_vizia::vizia::prelude::*;
- use nih_plug_vizia::vizia::vg;
- use nih_plug_vizia::vizia::vg::{Color, Canvas};
- use std::sync::Arc;
+use atomic_float::AtomicF32;
+use nih_plug_vizia::vizia::prelude::*;
+use nih_plug_vizia::vizia::vg;
+use nih_plug_vizia::vizia::vg::{Color};
+use std::sync::Arc;
 
 #[derive(Default, Clone, Lens)]
 pub struct Oscilloscope {
@@ -57,37 +57,39 @@ impl Oscilloscope {
             
             self.scroll_x = Arc::new(AtomicF32::new(scroll_x));
         }
+
+        pub fn render(&mut self) {
+            // Got errors if this wasn't here
+        }
     }
 
 impl View for Oscilloscope {
     fn element(&self) -> Option<&'static str> {
-        Some("oscilloscope")
+        Some("Oscilloscope")
     }
 
-    fn draw(&self, cx: &mut DrawContext, canvas: &mut Canvas<T>) {
+    //#[allow(implied_bounds_entailment)]
+    fn draw(&self, cx: &mut DrawContext, canvas: &mut Canvas) {
         let bounds = cx.bounds();
         if bounds.w == 0.0 || bounds.h == 0.0 {
             return;
         }
 
-        let line_width = cx.style.dpi_factor as f32 * 1.5;
-        let paint = vg::Paint::color(Color::black()).with_line_width(line_width);
-        let mut path = vg::Path::new();
+        let line_width: f32 = cx.style.dpi_factor as f32 * 1.5;
+        let paint: vg::Paint = vg::Paint::color(Color::black()).with_line_width(line_width);
+        let mut path: vg::Path = vg::Path::new();
 
         for (i, sample) in self.samples.iter().enumerate() 
         {
             let x = i as f32 * self.x_scale.into_inner() + self.scroll_x.into_inner();
-            let y = sample.into() * self.y_scale;
+            let y = sample.into_inner() * self.y_scale;
 
             path.move_to(x,y,);
             path.line_to(x ,0.0);
             
             // TODO: Figure out how to draw our line for the oscilloscope since this section is wrong
-            canvas.stroke_path(path, &paint);
+            canvas.stroke_path(&mut path, &paint);
         }
 
     }
-
-
-
 }

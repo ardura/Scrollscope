@@ -22,7 +22,7 @@ pub struct Gain {
     out_meter_decay_weight: f32,
 
     // Compressor class
-    osc_obj: Oscilloscope,
+    //osc_obj: Oscilloscope,
 
     // The current data for the different meters
     in_meter: Arc<AtomicF32>,
@@ -46,9 +46,9 @@ struct GainParams {
 
 impl Default for Gain {
     fn default() -> Self {
+//        let mut osc_obj = Oscilloscope::new();
         Self {
             params: Arc::new(GainParams::default()),
-            osc_obj: scrollscope::Oscilloscope::new(0.0, 0.0, 1.0, 1.0),
             out_meter_decay_weight: 1.0,
             in_meter: Arc::new(AtomicF32::new(util::MINUS_INFINITY_DB)),
         }
@@ -113,7 +113,7 @@ impl Plugin for Gain {
             self.params.clone(),
             self.in_meter.clone(),
             self.params.editor_state.clone(),
-            Arc::new(self.osc_obj.clone()),
+            //Arc::new(Oscilloscope::new(800,)),
         )
     }
 
@@ -146,7 +146,7 @@ impl Plugin for Gain {
             let scrollspeed = self.params.scrollspeed.value();
 
             // Create the compressor object
-            self.osc_obj.update_vals(scrollspeed);
+            //self.osc_obj.update_vals(scrollspeed);
 
             for sample in channel_samples {
                 // Apply gain
@@ -156,7 +156,7 @@ impl Plugin for Gain {
                 in_amplitude += *sample;
 
                 // Add this sample to our oscilloscope object
-                self.osc_obj.add_sample(*sample);
+                //self.osc_obj.add_sample(*sample);
             }
 
             // To save resources, a plugin can (and probably should!) only perform expensive
@@ -169,7 +169,7 @@ impl Plugin for Gain {
                 self.in_meter.store(new_in_meter, std::sync::atomic::Ordering::Relaxed);
 
                 // Seeing if this works
-                self.osc_obj.render();
+                //self.osc_obj.render();
             }
         }
 

@@ -44,16 +44,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in library 'duro_console'",
+            "name": "Debug unit tests in library 'scrollscope'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
                     "--lib",
-                    "--package=duro_console"
+                    "--package=scrollscope"
                 ],
                 "filter": {
-                    "name": "duro_console",
+                    "name": "scrollscope",
                     "kind": "lib"
                 }
             },
@@ -63,15 +63,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'duro_console'",
+            "name": "Debug executable 'scrollscope'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=duro_console",
-                    "--package=duro_console"
+                    "--bin=scrollscope",
+                    "--package=scrollscope"
                 ],
                 "filter": {
-                    "name": "duro_console",
+                    "name": "scrollscope",
                     "kind": "bin"
                 }
             },
@@ -81,16 +81,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'duro_console'",
+            "name": "Debug unit tests in executable 'scrollscope'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=duro_console",
-                    "--package=duro_console"
+                    "--bin=scrollscope",
+                    "--package=scrollscope"
                 ],
                 "filter": {
-                    "name": "duro_console",
+                    "name": "scrollscope",
                     "kind": "bin"
                 }
             },

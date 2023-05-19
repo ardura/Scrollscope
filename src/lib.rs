@@ -1,9 +1,7 @@
 use atomic_float::AtomicF32;
-use scrollscope::Oscilloscope;
 use nih_plug::{prelude::*};
-use nih_plug_vizia::ViziaState;
+use nih_plug_egui::{create_egui_editor, egui, widgets, EguiState};
 use std::{sync::Arc};
-mod editor;
 mod scrollscope;
 
 /**************************************************
@@ -19,13 +17,13 @@ pub struct Gain {
     params: Arc<GainParams>,
 
     // normalize the peak meter's response based on the sample rate with this
-    out_meter_decay_weight: f32,
+    peak_meter_decay_weight: f32,
 
     // Compressor class
     //osc_obj: Oscilloscope,
 
     // The current data for the different meters
-    in_meter: Arc<AtomicF32>,
+    peak_meter: Arc<AtomicF32>,
 }
 
 #[derive(Params)]
@@ -33,7 +31,7 @@ struct GainParams {
     /// The editor state, saved together with the parameter state so the custom scaling can be
     /// restored.
     #[persist = "editor-state"]
-    editor_state: Arc<ViziaState>,
+    editor_state: Arc<EguiState>,
 
     /// Gain scaling for the oscilloscope
     #[id = "free_gain"]
@@ -46,11 +44,10 @@ struct GainParams {
 
 impl Default for Gain {
     fn default() -> Self {
-//        let mut osc_obj = Oscilloscope::new();
         Self {
             params: Arc::new(GainParams::default()),
-            out_meter_decay_weight: 1.0,
-            in_meter: Arc::new(AtomicF32::new(util::MINUS_INFINITY_DB)),
+            peak_meter_decay_weight: 1.0,
+            peak_meter: Arc::new(AtomicF32::new(util::MINUS_INFINITY_DB)),
         }
     }
 }
@@ -58,7 +55,7 @@ impl Default for Gain {
 impl Default for GainParams {
     fn default() -> Self {
         Self {
-            editor_state: editor::default_state(),
+            editor_state: EguiState::from_size(800, 320),
 
             // Input gain dB parameter (free as in unrestricted nums)
             free_gain: FloatParam::new(
@@ -109,11 +106,65 @@ impl Plugin for Gain {
     }
 
     fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        editor::create(
-            self.params.clone(),
-            self.in_meter.clone(),
+        let params = self.params.clone();
+        let peak_meter = self.peak_meter.clone();
+        create_egui_editor(
             self.params.editor_state.clone(),
-            //Arc::new(Oscilloscope::new(800,)),
+            (),
+            |_, _| {},
+            move |egui_ctx, setter, _state| {
+                egui::CentralPanel::default().show(egui_ctx, |ui| {
+                    // NOTE: See `plugins/diopser/src/editor.rs` for an example using the generic UI widget
+
+                    // This is a fancy widget that can get all the information it needs to properly
+                    // display and modify the parameter from the parametr itself
+                    // It's not yet fully implemented, as the text is missing.
+                    ui.label("Some random integer");
+                    ui.add(widgets::ParamSlider::for_param(&params.some_int, setter));
+
+                    ui.label("Gain");
+                    ui.add(widgets::ParamSlider::for_param(&params.gain, setter));
+
+                    ui.label(
+                        "Also gain, but with a lame widget. Can't even render the value correctly!",
+                    );
+                    // This is a simple naieve version of a parameter slider that's not aware of how
+                    // the parameters work
+                    ui.add(
+                        egui::widgets::Slider::from_get_set(-30.0..=30.0, |new_value| {
+                            match new_value {
+                                Some(new_value_db) => {
+                                    let new_value = util::gain_to_db(new_value_db as f32);
+
+                                    setter.begin_set_parameter(&params.gain);
+                                    setter.set_parameter(&params.gain, new_value);
+                                    setter.end_set_parameter(&params.gain);
+
+                                    new_value_db
+                                }
+                                None => util::gain_to_db(params.gain.value()) as f64,
+                            }
+                        })
+                        .suffix(" dB"),
+                    );
+
+                    // TODO: Add a proper custom widget instead of reusing a progress bar
+                    let peak_meter =
+                        util::gain_to_db(peak_meter.load(std::sync::atomic::Ordering::Relaxed));
+                    let peak_meter_text = if peak_meter > util::MINUS_INFINITY_DB {
+                        format!("{peak_meter:.1} dBFS")
+                    } else {
+                        String::from("-inf dBFS")
+                    };
+
+                    let peak_meter_normalized = (peak_meter + 60.0) / 60.0;
+                    ui.allocate_space(egui::Vec2::splat(2.0));
+                    ui.add(
+                        egui::widgets::ProgressBar::new(peak_meter_normalized)
+                            .text(peak_meter_text),
+                    );
+                });
+            },
         )
     }
 
@@ -125,7 +176,7 @@ impl Plugin for Gain {
     ) -> bool {
         // After `PEAK_METER_DECAY_MS` milliseconds of pure silence, the peak meter's value should
         // have dropped by 12 dB
-        self.out_meter_decay_weight = 0.25f64.powf((buffer_config.sample_rate as f64 * PEAK_METER_DECAY_MS / 1000.0).recip()) as f32;
+        self.peak_meter_decay_weight = 0.25f64.powf((buffer_config.sample_rate as f64 * PEAK_METER_DECAY_MS / 1000.0).recip()) as f32;
 
         true
     }
@@ -142,11 +193,7 @@ impl Plugin for Gain {
         for channel_samples in buffer.iter_samples() {
             let mut in_amplitude = 0.0;
             let num_samples = channel_samples.len();
-
             let scrollspeed = self.params.scrollspeed.value();
-
-            // Create the compressor object
-            //self.osc_obj.update_vals(scrollspeed);
 
             for sample in channel_samples {
                 // Apply gain
@@ -154,9 +201,6 @@ impl Plugin for Gain {
                 
                 // Update the input meter amplitude
                 in_amplitude += *sample;
-
-                // Add this sample to our oscilloscope object
-                //self.osc_obj.add_sample(*sample);
             }
 
             // To save resources, a plugin can (and probably should!) only perform expensive
@@ -164,18 +208,22 @@ impl Plugin for Gain {
             if self.params.editor_state.is_open() {
                 // Input gain meter
                 in_amplitude = (in_amplitude / num_samples as f32).abs();
-                let current_in_meter = self.in_meter.load(std::sync::atomic::Ordering::Relaxed);
-                let new_in_meter = if in_amplitude > current_in_meter {in_amplitude} else {current_in_meter * self.out_meter_decay_weight + in_amplitude * (1.0 - self.out_meter_decay_weight)};
-                self.in_meter.store(new_in_meter, std::sync::atomic::Ordering::Relaxed);
+                let current_peak_meter = self.peak_meter.load(std::sync::atomic::Ordering::Relaxed);
+                let new_peak_meter = if in_amplitude > current_peak_meter {
+                    in_amplitude
+                } else {
+                    current_peak_meter * self.peak_meter_decay_weight 
+                        + in_amplitude * (1.0 - self.peak_meter_decay_weight)
+                };
 
-                // Seeing if this works
-                //self.osc_obj.render();
+                self.peak_meter.store(new_peak_meter, std::sync::atomic::Ordering::Relaxed);
             }
         }
 
         ProcessStatus::Normal
     }
 
+/*
     const MIDI_INPUT: MidiConfig = MidiConfig::None;
 
     const MIDI_OUTPUT: MidiConfig = MidiConfig::None;
@@ -192,6 +240,7 @@ impl Plugin for Gain {
     fn reset(&mut self) {}
 
     fn deactivate(&mut self) {}
+    */
 }
 
 impl ClapPlugin for Gain {

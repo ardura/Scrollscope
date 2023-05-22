@@ -1,8 +1,10 @@
 use atomic_float::AtomicF32;
+//use ::egui::mutex::Mutex;
 use nih_plug::{prelude::*};
-use nih_plug_egui::{create_egui_editor, egui, widgets, EguiState};
-use std::{sync::Arc};
-mod scrollscope;
+use nih_plug_egui::{create_egui_editor, egui::{self, mutex::Mutex}, widgets, EguiState};
+use std::{sync::{Arc, atomic::Ordering}};
+
+
 
 /**************************************************
  * Scrollscope by Ardura
@@ -24,6 +26,7 @@ pub struct Gain {
 
     // The current data for the different meters
     peak_meter: Arc<AtomicF32>,
+    samples: Arc<Mutex<Vec<AtomicF32>>>,
 }
 
 #[derive(Params)]
@@ -48,6 +51,7 @@ impl Default for Gain {
             params: Arc::new(GainParams::default()),
             peak_meter_decay_weight: 1.0,
             peak_meter: Arc::new(AtomicF32::new(util::MINUS_INFINITY_DB)),
+            samples: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -108,6 +112,7 @@ impl Plugin for Gain {
     fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let params = self.params.clone();
         let peak_meter = self.peak_meter.clone();
+        let samples = self.samples.clone();
         create_egui_editor(
             self.params.editor_state.clone(),
             (),
@@ -116,53 +121,42 @@ impl Plugin for Gain {
                 egui::CentralPanel::default().show(egui_ctx, |ui| {
                     // NOTE: See `plugins/diopser/src/editor.rs` for an example using the generic UI widget
 
-                    // This is a fancy widget that can get all the information it needs to properly
-                    // display and modify the parameter from the parametr itself
-                    // It's not yet fully implemented, as the text is missing.
-                    ui.label("Some random integer");
-                    ui.add(widgets::ParamSlider::for_param(&params.some_int, setter));
+                    ui.horizontal(|ui| {
+                        ui.label("Gain");
+                        ui.add(widgets::ParamSlider::for_param(&params.free_gain, setter));
 
-                    ui.label("Gain");
-                    ui.add(widgets::ParamSlider::for_param(&params.gain, setter));
+                        let peak_meter =
+                            util::gain_to_db(peak_meter.load(std::sync::atomic::Ordering::Relaxed));
+                        let peak_meter_text = if peak_meter > util::MINUS_INFINITY_DB {
+                                format!("{peak_meter:.1} dBFS")
+                            } else {
+                                String::from("-inf dBFS")
+                            };
 
-                    ui.label(
-                        "Also gain, but with a lame widget. Can't even render the value correctly!",
-                    );
-                    // This is a simple naieve version of a parameter slider that's not aware of how
-                    // the parameters work
-                    ui.add(
-                        egui::widgets::Slider::from_get_set(-30.0..=30.0, |new_value| {
-                            match new_value {
-                                Some(new_value_db) => {
-                                    let new_value = util::gain_to_db(new_value_db as f32);
-
-                                    setter.begin_set_parameter(&params.gain);
-                                    setter.set_parameter(&params.gain, new_value);
-                                    setter.end_set_parameter(&params.gain);
-
-                                    new_value_db
-                                }
-                                None => util::gain_to_db(params.gain.value()) as f64,
-                            }
-                        })
-                        .suffix(" dB"),
-                    );
-
-                    // TODO: Add a proper custom widget instead of reusing a progress bar
-                    let peak_meter =
-                        util::gain_to_db(peak_meter.load(std::sync::atomic::Ordering::Relaxed));
-                    let peak_meter_text = if peak_meter > util::MINUS_INFINITY_DB {
-                        format!("{peak_meter:.1} dBFS")
-                    } else {
-                        String::from("-inf dBFS")
-                    };
-
-                    let peak_meter_normalized = (peak_meter + 60.0) / 60.0;
-                    ui.allocate_space(egui::Vec2::splat(2.0));
-                    ui.add(
-                        egui::widgets::ProgressBar::new(peak_meter_normalized)
-                            .text(peak_meter_text),
-                    );
+                            let peak_meter_normalized = (peak_meter + 60.0) / 60.0;
+                            ui.allocate_space(egui::Vec2::splat(2.0));
+                            ui.add(
+                                egui::widgets::ProgressBar::new(peak_meter_normalized)
+                                    .text(peak_meter_text),
+                            );
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        // Oscilloscope code
+                        // https://github.com/emilk/egui/blob/master/crates/egui_demo_lib/src/demo/painting.rs?
+                        
+                        for i in 1..samples.lock().len() {
+                            let prev_sample = &samples.lock()[i - 1];
+                            let curr_sample = &samples.lock()[i];
+                
+                            let prev_pos = egui::pos2(i as f32 - 1.0, prev_sample.load(Ordering::Relaxed));
+                            let curr_pos = egui::pos2(i as f32, curr_sample.load(Ordering::Relaxed));
+                
+                            let line_color = egui::Color32::GREEN;
+                            let line_stroke = egui::Stroke::new(1.0, line_color);
+                            ui.painter().line_segment([prev_pos, curr_pos], line_stroke);
+                        }
+                    });
                 });
             },
         )
@@ -193,7 +187,8 @@ impl Plugin for Gain {
         for channel_samples in buffer.iter_samples() {
             let mut in_amplitude = 0.0;
             let num_samples = channel_samples.len();
-            let scrollspeed = self.params.scrollspeed.value();
+            //let scrollspeed = self.params.scrollspeed.value();
+            //let samples = &self.samples;
 
             for sample in channel_samples {
                 // Apply gain
@@ -201,6 +196,17 @@ impl Plugin for Gain {
                 
                 // Update the input meter amplitude
                 in_amplitude += *sample;
+                
+                // Update our samples vector for oscilloscope
+                let mut guard = self.samples.lock();
+                guard.push(AtomicF32::new(*sample));
+
+                
+                // Limit the size of the vector to 100 elements
+                if guard.len() > 100 {
+                    guard.remove(0);
+                }
+
             }
 
             // To save resources, a plugin can (and probably should!) only perform expensive

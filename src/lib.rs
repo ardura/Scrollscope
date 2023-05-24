@@ -1,7 +1,6 @@
 use atomic_float::AtomicF32;
-//use ::egui::{style, Color32, Frame};
 use nih_plug::{prelude::*};
-use nih_plug_egui::{create_egui_editor, egui::{self, mutex::Mutex, plot::{Line, PlotPoints}, Color32, Frame, RichText}, widgets, EguiState};
+use nih_plug_egui::{create_egui_editor, egui::{self, mutex::Mutex, plot::{Line, PlotPoints, HLine}, Color32, Frame, RichText, Stroke}, widgets, EguiState};
 use std::{sync::{Arc, atomic::Ordering}};
 
 /**************************************************
@@ -17,6 +16,8 @@ pub struct Gain {
     skip_counter: i32,
     
     toggle_ontop: Arc<Mutex<bool>>,
+
+    is_clipping: Arc<Mutex<bool>>,
 
     // Data holding values
     samples: Arc<Mutex<Vec<AtomicF32>>>,
@@ -51,6 +52,7 @@ impl Default for Gain {
             params: Arc::new(GainParams::default()),
             skip_counter: 0,
             toggle_ontop: Arc::new(Mutex::new(false)),
+            is_clipping: Arc::new(Mutex::new(false)),
             samples: Arc::new(Mutex::new(Vec::new())),
             aux_samples: Arc::new(Mutex::new(Vec::new())),
         }
@@ -125,6 +127,7 @@ impl Plugin for Gain {
         let samples = self.samples.clone();
         let aux_samples = self.aux_samples.clone();
         let ontop = self.toggle_ontop.clone();
+        let is_clipping = self.is_clipping.clone();
         create_egui_editor(
             self.params.editor_state.clone(),
             (),
@@ -241,6 +244,10 @@ impl Plugin for Gain {
                                     plot_ui.line(aux_line);
                                     plot_ui.line(line);
                                 }
+                                if *is_clipping.lock() {
+                                    plot_ui.hline(HLine::new(1.0).color(Color32::RED).stroke(Stroke::new(3.0, Color32::RED)));
+                                    plot_ui.hline(HLine::new(-1.0).color(Color32::RED).stroke(Stroke::new(3.0, Color32::RED)));
+                                }
                             })
                             .response;
                         });
@@ -274,13 +281,14 @@ impl Plugin for Gain {
         for aux_channel_samples in aux.inputs[0].iter_samples() {
             for aux_sample in aux_channel_samples {
                 // Apply gain
-                *aux_sample *= self.params.free_gain.smoothed.next();
+                let visual_sample = *aux_sample * self.params.free_gain.smoothed.next();
+                if visual_sample.abs() > 1.0 {self.is_clipping = Arc::new(Mutex::new(true));}
 
                 // Only grab X samples to "optimize"
                 if self.skip_counter % self.params.h_scale.value() == 0 {
                     // Update our samples vector for oscilloscope
                     let mut aux_guard = self.aux_samples.lock();
-                    aux_guard.push(AtomicF32::new(*aux_sample));
+                    aux_guard.push(AtomicF32::new(visual_sample));
 
                     // Limit the size of the vector to X elements
                     let scroll = self.params.scrollspeed.value() as usize;
@@ -299,13 +307,14 @@ impl Plugin for Gain {
         for channel_samples in buffer.iter_samples() {
             for sample in channel_samples {
                 // Apply gain
-                *sample *= self.params.free_gain.smoothed.next();
+                let visual_sample2 = *sample * self.params.free_gain.smoothed.next();
+                if visual_sample2.abs() > 1.0 {self.is_clipping = Arc::new(Mutex::new(true));}
                 
                 // Only grab X samples to "optimize"
                 if self.skip_counter % self.params.h_scale.value() == 0 {
                     // Update our samples vector for oscilloscope
                     let mut guard = self.samples.lock();
-                    guard.push(AtomicF32::new(*sample));
+                    guard.push(AtomicF32::new(visual_sample2));
 
                     // Limit the size of the vector to X elements
                     let scroll = self.params.scrollspeed.value() as usize;
@@ -326,25 +335,6 @@ impl Plugin for Gain {
 
         ProcessStatus::Normal
     }
-
-/*
-    const MIDI_INPUT: MidiConfig = MidiConfig::None;
-
-    const MIDI_OUTPUT: MidiConfig = MidiConfig::None;
-
-    const HARD_REALTIME_ONLY: bool = false;
-
-    fn task_executor(&self) -> TaskExecutor<Self> {
-        // In the default implementation we can simply ignore the value
-        Box::new(|_| ())
-    }
-
-    fn filter_state(_state: &mut PluginState) {}
-
-    fn reset(&mut self) {}
-
-    fn deactivate(&mut self) {}
-    */
 }
 
 impl ClapPlugin for Gain {

@@ -22,8 +22,10 @@ pub struct Gain {
     skip_counter: i32,
     
     toggle_ontop: Arc<Mutex<bool>>,
-
     is_clipping: Arc<AtomicF32>,
+    // TODO: Add aux used and sum used that adjusts based on aux input
+    aux_used: Arc<Mutex<bool>>,
+    sum_used: Arc<Mutex<bool>>,
 
     user_color_primary: Color32,
     user_color_secondary: Color32,
@@ -68,6 +70,8 @@ impl Default for Gain {
             user_color_sum: YELLOW,
             user_color_background: DARK,
             toggle_ontop: Arc::new(Mutex::new(false)),
+            aux_used: Arc::new(Mutex::new(false)),
+            sum_used: Arc::new(Mutex::new(false)),
             is_clipping: Arc::new(AtomicF32::new(0.0)),
             samples: Arc::new(Mutex::new(Vec::new())),
             aux_samples: Arc::new(Mutex::new(Vec::new())),
@@ -323,6 +327,11 @@ impl Plugin for Gain {
                     
             // Clear the sum_samples vector
             self.sum_samples.lock().clear();
+
+            if let Some(aux_input) = aux.inputs.get(0) {
+                // Aux input allowed
+
+            }
                     
             // Process the sidechain and main audio - Had to make this mutable since iter does not exist on this impl
             for (mut aux_channel_samples, mut channel_samples) in aux.inputs[0].iter_samples().zip(buffer.iter_samples()) {

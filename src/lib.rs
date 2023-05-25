@@ -148,6 +148,8 @@ impl Plugin for Gain {
         let sum_samples = self.sum_samples.clone();
         let ontop = self.toggle_ontop.clone();
         let is_clipping = self.is_clipping.clone();
+        let aux_used = self.aux_used.clone();
+        let sum_used = self.sum_used.clone();
         let user_color_primary = self.user_color_primary.clone();
         let user_color_secondary = self.user_color_secondary.clone();
         let user_color_sum = self.user_color_sum.clone();
@@ -212,6 +214,9 @@ impl Plugin for Gain {
                             let aux_samples = aux_samples.lock();
                             let sum_samples = sum_samples.lock();
 
+                            let mut aux_line: Line = Line::new(PlotPoints::default());
+                            let mut sum_line: Line = Line::new(PlotPoints::default());
+
                             // Primary Input
                             let data: PlotPoints = samples
                                 .iter()
@@ -229,39 +234,43 @@ impl Plugin for Gain {
                                 .collect();
                             let line = Line::new(data).color(primay_line_color);
 
-                            // Aux input
-                            let aux_data: PlotPoints = aux_samples
-                                .iter()
-                                .enumerate()
-                                .map(|(i, sample)| {
-                                    //let h_scale = params.h_scale.value() as f64;
-                                    //if i as f64 % h_scale == 0.0 {
-                                        let x = i as f64;
-                                        let y = sample.load(Ordering::Relaxed) as f64;
-                                        [x, y]
-                                    //} else {
-                                    //    None
-                                    //}
-                                })
-                                .collect();
-                            let aux_line = Line::new(aux_data).color(aux_line_color);
+                            if *aux_used.lock() {
+                                // Aux input
+                                let aux_data: PlotPoints = aux_samples
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, sample)| {
+                                        //let h_scale = params.h_scale.value() as f64;
+                                        //if i as f64 % h_scale == 0.0 {
+                                            let x = i as f64;
+                                            let y = sample.load(Ordering::Relaxed) as f64;
+                                            [x, y]
+                                        //} else {
+                                        //    None
+                                        //}
+                                    })
+                                    .collect();
+                                aux_line = Line::new(aux_data).color(aux_line_color);
+                            }
 
-                            // Summed audio line
-                            let sum_data: PlotPoints = sum_samples
-                                .iter()
-                                .enumerate()
-                                .map(|(i, sample)| {
-                                    //let h_scale = params.h_scale.value() as f64;
-                                    //if i as f64 % h_scale == 0.0 {
-                                        let x = i as f64;
-                                        let y = sample.load(Ordering::Relaxed) as f64;
-                                        [x, y]
-                                    //} else {
-                                    //    None
-                                    //}
-                                })
-                                .collect();
-                            let sum_line = Line::new(sum_data).color(sum_line_color);
+                            if *sum_used.lock() {
+                                // Summed audio line
+                                let sum_data: PlotPoints = sum_samples
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, sample)| {
+                                        //let h_scale = params.h_scale.value() as f64;
+                                        //if i as f64 % h_scale == 0.0 {
+                                            let x = i as f64;
+                                            let y = sample.load(Ordering::Relaxed) as f64;
+                                            [x, y]
+                                        //} else {
+                                        //    None
+                                        //}
+                                    })
+                                    .collect();
+                                sum_line = Line::new(sum_data).color(sum_line_color);
+                            }
 
                             egui::plot::Plot::new("Oscilloscope")
                             .show_background(false)
@@ -276,14 +285,21 @@ impl Plugin for Gain {
                             .allow_drag(false)
                             .show(ui, |plot_ui| {
                                 // Draw the sum line first so it's furthest behind
-                                plot_ui.line(sum_line);
+                                if *sum_used.lock() {
+                                    plot_ui.line(sum_line);
+                                }
                                 // Draw whichever order next
                                 if *ontop.lock() {
                                     plot_ui.line(line);
-                                    plot_ui.line(aux_line);
+                                    if *aux_used.lock()
+                                    {
+                                        plot_ui.line(aux_line);
+                                    }
                                 }
                                 else {
-                                    plot_ui.line(aux_line);
+                                    if *aux_used.lock() {
+                                        plot_ui.line(aux_line);
+                                    }
                                     plot_ui.line(line);
                                 }
                                 // Draw our clipping guides if needed
@@ -328,9 +344,14 @@ impl Plugin for Gain {
             // Clear the sum_samples vector
             self.sum_samples.lock().clear();
 
-            if let Some(aux_input) = aux.inputs.get(0) {
+            if aux.inputs.get(0).is_some() {
                 // Aux input allowed
-
+                self.aux_used = Arc::new(Mutex::new(true));
+                self.sum_used = Arc::new(Mutex::new(true));
+            }
+            else {
+                self.aux_used = Arc::new(Mutex::new(false));
+                self.sum_used = Arc::new(Mutex::new(false));
             }
                     
             // Process the sidechain and main audio - Had to make this mutable since iter does not exist on this impl

@@ -320,59 +320,56 @@ impl Plugin for Gain {
 
             // Reset this every buffer process
             self.skip_counter = 0;
-
-            // Process the sidechain
-            for aux_channel_samples in aux.inputs[0].iter_samples() {
-                for aux_sample in aux_channel_samples {
+                    
+            // Clear the sum_samples vector
+            self.sum_samples.lock().clear();
+                    
+            // Process the sidechain and main audio - Had to make this mutable since iter does not exist on this impl
+            for (mut aux_channel_samples, mut channel_samples) in aux.inputs[0].iter_samples().zip(buffer.iter_samples()) {
+                for (aux_sample, sample) in aux_channel_samples.iter_mut().zip(channel_samples.iter_mut()) {
                     // Apply gain
                     let visual_sample = *aux_sample * self.params.free_gain.smoothed.next();
-                    if visual_sample.abs() > 1.0 {self.is_clipping.store(120.0, Ordering::Relaxed);}
-
+                    let visual_sample2 = *sample * self.params.free_gain.smoothed.next();
+                    let sum_sample = visual_sample + visual_sample2;
+                    
+                    // Set our clipping line timer variable
+                    if visual_sample.abs() > 1.0 || visual_sample2.abs() > 1.0 {
+                        self.is_clipping.store(120.0, Ordering::Relaxed);
+                    }
+                
                     // Only grab X samples to "optimize"
                     if self.skip_counter % self.params.h_scale.value() == 0 {
-                        // Update our samples vector for oscilloscope
+                        // Update aux_samples vector for oscilloscope
                         let mut aux_guard = self.aux_samples.lock();
                         aux_guard.push(AtomicF32::new(visual_sample));
-
-                        // Limit the size of the vector to X elements
+                    
+                        // Update samples vector for oscilloscope
+                        let mut guard = self.samples.lock();
+                        guard.push(AtomicF32::new(visual_sample2));
+                    
+                        // Update sum_samples vector for oscilloscope
+                        let mut sum_guard = self.sum_samples.lock();
+                        sum_guard.push(AtomicF32::new(sum_sample));
+                    
+                        // Limit the size of the vectors to X elements
                         let scroll = self.params.scrollspeed.value() as usize;
                         if aux_guard.len() > scroll {
                             let trim_amount = aux_guard.len() - scroll;
                             aux_guard.drain(0..=trim_amount);
                         }
-                    }
-                    self.skip_counter += 1;
-                }
-            }
-
-            
-
-            // Reset this every buffer process
-            self.skip_counter = 0;
-
-            // Process the main audio
-            for channel_samples in buffer.iter_samples() {
-                for sample in channel_samples {
-                    // Apply gain
-                    let visual_sample2 = *sample * self.params.free_gain.smoothed.next();
-                    if visual_sample2.abs() > 1.0 {self.is_clipping.store(120.0, Ordering::Relaxed);}
-
-                    // Only grab X samples to "optimize"
-                    if self.skip_counter % self.params.h_scale.value() == 0 {
-                        // Update our samples vector for oscilloscope
-                        let mut guard = self.samples.lock();
-                        guard.push(AtomicF32::new(visual_sample2));
-
-                        // Limit the size of the vector to X elements
-                        let scroll = self.params.scrollspeed.value() as usize;
                         if guard.len() > scroll {
                             let trim_amount = guard.len() - scroll;
                             guard.drain(0..=trim_amount);
+                        }
+                        if sum_guard.len() > scroll {
+                            let trim_amount = sum_guard.len() - scroll;
+                            sum_guard.drain(0..=trim_amount);
                         }
                     }
                     self.skip_counter += 1;
                 }
             }
+
         }
 
         ProcessStatus::Normal

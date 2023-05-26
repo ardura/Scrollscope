@@ -149,7 +149,7 @@ impl Plugin for Gain {
             |_, _| {},
             move |egui_ctx, setter, _state| {
                 egui::CentralPanel::default()
-                    .frame(Frame::none().fill(Color32::from_rgb(10,10,10)))
+                    .frame(Frame::none().fill(*user_color_background.lock()))
                     .show(egui_ctx, |ui| {
                         // Default colors
                         let mut primary_line_color = user_color_primary.lock();
@@ -159,7 +159,7 @@ impl Plugin for Gain {
 
                         // Change colors - there's probably a better way to do this
                         let mut style_var = ui.style_mut().clone();
-                        style_var.visuals.widgets.inactive.bg_fill = Color32::LIGHT_GRAY;
+                        style_var.visuals.widgets.inactive.bg_fill = Color32::from_rgb(34,34,34);
 
                         // Assign default colors if user colors not set
                         style_var.visuals.widgets.inactive.fg_stroke.color = *primary_line_color;

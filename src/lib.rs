@@ -1,7 +1,7 @@
 use atomic_float::AtomicF32;
 use nih_plug::{prelude::*};
-use nih_plug_egui::{create_egui_editor, egui::{self, mutex::Mutex, plot::{Line, PlotPoints, HLine}, Color32, Frame, RichText, Stroke}, widgets, EguiState};
-use std::{sync::{Arc, atomic::Ordering}};
+use nih_plug_egui::{create_egui_editor, egui::{self, mutex::{Mutex}, plot::{Line, PlotPoints, HLine}, Color32, Stroke, Rect, Rounding}, widgets, EguiState};
+use std::{sync::{Arc, atomic::{Ordering}}};
 
 /**************************************************
  * Scrollscope by Ardura
@@ -13,29 +13,29 @@ const ORANGE: Color32 = Color32::from_rgb(239,123,69);
 const CYAN: Color32 = Color32::from_rgb(14,177,210);
 const YELLOW: Color32 = Color32::from_rgb(248, 255, 31);
 const DARK: Color32 = Color32::from_rgb(10, 10, 10);
-const GREY: Color32 = Color32::from_rgb(20, 20, 20);
 
 pub struct Gain {
     params: Arc<GainParams>,
 
     // Counter for scaling sample skipping
     skip_counter: i32,
-    
     toggle_ontop: Arc<Mutex<bool>>,
     is_clipping: Arc<AtomicF32>,
     // TODO: Add aux used and sum used that adjusts based on aux input
     aux_used: Arc<Mutex<bool>>,
     sum_used: Arc<Mutex<bool>>,
 
-    user_color_primary: Color32,
-    user_color_secondary: Color32,
-    user_color_sum: Color32,
-    user_color_background: Color32,
+    user_color_primary: Arc<Mutex<Color32>>,
+    user_color_secondary: Arc<Mutex<Color32>>,
+    user_color_sum: Arc<Mutex<Color32>>,
+    user_color_background: Arc<Mutex<Color32>>,
 
     // Data holding values
     samples: Arc<Mutex<Vec<AtomicF32>>>,
     aux_samples: Arc<Mutex<Vec<AtomicF32>>>,
-    sum_samples: Arc<Mutex<Vec<AtomicF32>>>,
+
+    // Syncing for beats
+    sync_var: Arc<Mutex<bool>>,
 }
 
 #[derive(Params)]
@@ -55,9 +55,6 @@ struct GainParams {
     /// Horizontal Scaling
     #[id = "scaling"]
     pub h_scale: IntParam,
-
-    //#[id = "toggle_ontop"]
-    //pub toggle_ontop: BoolParam,
 }
 
 impl Default for Gain {
@@ -65,17 +62,17 @@ impl Default for Gain {
         Self {
             params: Arc::new(GainParams::default()),
             skip_counter: 0,
-            user_color_primary: ORANGE,
-            user_color_secondary: CYAN,
-            user_color_sum: YELLOW,
-            user_color_background: DARK,
+            user_color_primary: Arc::new(Mutex::new(ORANGE)),
+            user_color_secondary: Arc::new(Mutex::new(CYAN)),
+            user_color_sum: Arc::new(Mutex::new(YELLOW)),
+            user_color_background: Arc::new(Mutex::new(DARK)),
             toggle_ontop: Arc::new(Mutex::new(false)),
             aux_used: Arc::new(Mutex::new(false)),
             sum_used: Arc::new(Mutex::new(false)),
             is_clipping: Arc::new(AtomicF32::new(0.0)),
             samples: Arc::new(Mutex::new(Vec::new())),
             aux_samples: Arc::new(Mutex::new(Vec::new())),
-            sum_samples: Arc::new(Mutex::new(Vec::new())),
+            sync_var: Arc::new(Mutex::new(false)),
         }
     }
 }
@@ -83,7 +80,7 @@ impl Default for Gain {
 impl Default for GainParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(800, 320),
+            editor_state: EguiState::from_size(820, 360),
 
             // Input gain dB parameter (free as in unrestricted nums)
             free_gain: FloatParam::new(
@@ -103,8 +100,8 @@ impl Default for GainParams {
             // scrollspeed parameter
             scrollspeed: IntParam::new(
                 "Samples",
-                8000,
-                    IntRange::Linear {min: 5000, max: 25000 },
+                3500,
+                    IntRange::Linear {min: 2000, max: 20000 },
             ),
 
             // scaling parameter
@@ -145,11 +142,9 @@ impl Plugin for Gain {
         let params = self.params.clone();
         let samples = self.samples.clone();
         let aux_samples = self.aux_samples.clone();
-        let sum_samples = self.sum_samples.clone();
         let ontop = self.toggle_ontop.clone();
         let is_clipping = self.is_clipping.clone();
-        let aux_used = self.aux_used.clone();
-        let sum_used = self.sum_used.clone();
+        let sync_var = self.sync_var.clone();
         let user_color_primary = self.user_color_primary.clone();
         let user_color_secondary = self.user_color_secondary.clone();
         let user_color_sum = self.user_color_sum.clone();
@@ -160,59 +155,80 @@ impl Plugin for Gain {
             |_, _| {},
             move |egui_ctx, setter, _state| {
                 egui::CentralPanel::default()
-                    .frame(Frame::none().fill(Color32::from_rgb(10,10,10)))
+                    // I couldn't figure out getting this to update
+                    //.frame(Frame::none().fill(*user_color_background.lock()))
                     .show(egui_ctx, |ui| {
 
                         // Default colors
-                        let primay_line_color: Color32 = user_color_primary;
-                        let aux_line_color: Color32 = user_color_secondary;
-                        let sum_line_color: Color32 = user_color_sum;
+                        let mut primary_line_color = user_color_primary.lock();
+                        let mut aux_line_color = user_color_secondary.lock();
+                        let mut sum_line_color = user_color_sum.lock();
+                        let mut background_color = user_color_background.lock();
 
                         // Change colors - there's probably a better way to do this
                         let mut style_var = ui.style_mut().clone();
-                        style_var.visuals.widgets.inactive.bg_fill = GREY;
+                        style_var.visuals.widgets.inactive.bg_fill = Color32::from_rgb(34,34,34);
 
                         // Assign default colors if user colors not set
-                        style_var.visuals.widgets.inactive.fg_stroke.color = user_color_primary;
-                        style_var.visuals.widgets.noninteractive.fg_stroke.color = user_color_primary;
-                        style_var.visuals.widgets.inactive.bg_stroke.color = user_color_primary;
-                        style_var.visuals.widgets.active.fg_stroke.color = user_color_primary;
-                        style_var.visuals.widgets.active.bg_stroke.color = user_color_primary;
-                        style_var.visuals.widgets.open.fg_stroke.color = user_color_primary;
+                        style_var.visuals.widgets.inactive.fg_stroke.color = *primary_line_color;
+                        style_var.visuals.widgets.noninteractive.fg_stroke.color = *primary_line_color;
+                        style_var.visuals.widgets.inactive.bg_stroke.color = *primary_line_color;
+                        style_var.visuals.widgets.active.fg_stroke.color = *primary_line_color;
+                        style_var.visuals.widgets.active.bg_stroke.color = *primary_line_color;
+                        style_var.visuals.widgets.open.fg_stroke.color = *primary_line_color;
                         // Param fill
-                        style_var.visuals.selection.bg_fill = user_color_primary;
+                        style_var.visuals.selection.bg_fill = *primary_line_color;
 
-                        style_var.visuals.widgets.noninteractive.bg_stroke.color = user_color_secondary;
-                        style_var.visuals.widgets.noninteractive.bg_fill = user_color_background;
+                        style_var.visuals.widgets.noninteractive.bg_stroke.color = *aux_line_color;
+                        style_var.visuals.widgets.noninteractive.bg_fill = *background_color;
+
+                        // Trying to draw background as rect
+                        ui.painter().rect_filled(Rect::EVERYTHING, Rounding::none(), *background_color);
 
                         ui.set_style(style_var);
 
-                        ui.horizontal(|ui| {
-                            ui.add_space(6.0);
-                            ui.label(RichText::new("Scrollscope"));
-                            ui.add_space(6.0);
+                        ui.vertical(|ui | {
+                            ui.horizontal(|ui| {
+                                ui.collapsing("Scrollscope",|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label("These don't save yet.");
+                                        ui.separator();
+                                        ui.color_edit_button_srgba(&mut primary_line_color);
+                                        ui.color_edit_button_srgba(&mut aux_line_color);
+                                        ui.color_edit_button_srgba(&mut sum_line_color);
+                                        ui.color_edit_button_srgba(&mut background_color);
+                                        ui.add_space(4.0);
+                                        ui.label("Programmed by Ardura with nih-plug and egui");
+                                    });
+                                });
 
-                            ui.label("Gain");
-                            ui.add(widgets::ParamSlider::for_param(&params.free_gain, setter).with_width(80.0));
+                                ui.label("Gain");
+                                ui.add(widgets::ParamSlider::for_param(&params.free_gain, setter).with_width(60.0));
 
-                            ui.add_space(6.0);
+                                ui.add_space(4.0);
 
-                            ui.label("Samples");
-                            ui.add(widgets::ParamSlider::for_param(&params.scrollspeed, setter).with_width(80.0));
+                                ui.label("Samples");
+                                ui.add(widgets::ParamSlider::for_param(&params.scrollspeed, setter).with_width(60.0));
 
-                            ui.add_space(6.0);
+                                ui.add_space(4.0);
 
-                            ui.label("Scale");
-                            ui.add(widgets::ParamSlider::for_param(&params.h_scale, setter).with_width(80.0));
+                                ui.label("Skip");
+                                ui.add(widgets::ParamSlider::for_param(&params.h_scale, setter).with_width(60.0));
 
-                            ui.add_space(6.0);
-                            ui.checkbox(&mut ontop.lock(), "Order").on_hover_text("Change the drawing order of waveforms");
+                                ui.add_space(4.0);
+                                ui.checkbox(&mut ontop.lock(), "Swap").on_hover_text("Change the drawing order of waveforms");
+
+                                ui.separator();
+                                ui.checkbox(&mut sync_var.lock(), "Sync Beat").on_hover_text("Lock drawing to beat");
+                            });
                         });
+                            
 
                         ui.allocate_ui(egui::Vec2::splat(100.0), |ui| {
                             let samples = samples.lock();
                             let aux_samples = aux_samples.lock();
-                            let sum_samples = sum_samples.lock();
+                            let mut sum_line = Line::new(PlotPoints::default());
+                            let aux_line;// = Line::new(PlotPoints::default());
 
                             let mut aux_line: Line = Line::new(PlotPoints::default());
                             let mut sum_line: Line = Line::new(PlotPoints::default());
@@ -222,54 +238,43 @@ impl Plugin for Gain {
                                 .iter()
                                 .enumerate()
                                 .map(|(i, sample)| {
-                                    //let h_scale = params.h_scale.value() as f64;
-                                    //if i as f64 % h_scale == 0.0 {
-                                        let x = i as f64;
-                                        let y = sample.load(Ordering::Relaxed) as f64;
-                                        [x, y]
-                                    //} else {
-                                    //    None
-                                    //}
+                                    let x = i as f64;
+                                    let y = sample.load(Ordering::Relaxed) as f64;
+                                    [x, y]
                                 })
                                 .collect();
-                            let line = Line::new(data).color(primay_line_color);
+                            let line = Line::new(data).color(*primary_line_color).stroke(Stroke::new(1.2,*primary_line_color));
 
-                            if *aux_used.lock() {
-                                // Aux input
-                                let aux_data: PlotPoints = aux_samples
-                                    .iter()
+                            // Aux input
+                            let aux_data: PlotPoints = aux_samples
+                                .iter()
+                                .enumerate()
+                                .map(|(i, sample)| {
+                                    let x = i as f64;
+                                    let y = sample.load(Ordering::Relaxed) as f64;
+                                    [x, y]
+                                })
+                                .collect();
+                            aux_line = Line::new(aux_data).color(*aux_line_color).stroke(Stroke::new(1.0,*aux_line_color));
+                            
+                            // Summed audio line
+                            let are_equal = samples.iter().zip(aux_samples.iter()).all(|(a, b)| {
+                                a.load(Ordering::SeqCst) == b.load(Ordering::SeqCst)
+                            });
+                            if !are_equal {
+                                let sum_data: PlotPoints = samples
+                                .iter()
+                                .zip(aux_samples.iter())
                                     .enumerate()
-                                    .map(|(i, sample)| {
-                                        //let h_scale = params.h_scale.value() as f64;
-                                        //if i as f64 % h_scale == 0.0 {
-                                            let x = i as f64;
-                                            let y = sample.load(Ordering::Relaxed) as f64;
-                                            [x, y]
-                                        //} else {
-                                        //    None
-                                        //}
-                                    })
-                                    .collect();
-                                aux_line = Line::new(aux_data).color(aux_line_color);
-                            }
-
-                            if *sum_used.lock() {
-                                // Summed audio line
-                                let sum_data: PlotPoints = sum_samples
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, sample)| {
-                                        //let h_scale = params.h_scale.value() as f64;
-                                        //if i as f64 % h_scale == 0.0 {
-                                            let x = i as f64;
-                                            let y = sample.load(Ordering::Relaxed) as f64;
-                                            [x, y]
-                                        //} else {
-                                        //    None
-                                        //}
-                                    })
-                                    .collect();
-                                sum_line = Line::new(sum_data).color(sum_line_color);
+                                    .map(|(a,b)| {
+                                        let x: f64 = a as f64;
+                                        let y: f64 = (b.0.clone().load(Ordering::Relaxed) + b.1.clone().load(Ordering::Relaxed)).into();
+                                        if y > 1.0 || y < -1.0 {
+                                            is_clipping.store(120.0, Ordering::Relaxed);
+                                        }
+                                        [x,y]
+                                     }).collect();
+                                sum_line = Line::new(sum_data).color(*sum_line_color).stroke(Stroke::new(0.7,*sum_line_color));
                             }
 
                             egui::plot::Plot::new("Oscilloscope")
@@ -281,13 +286,14 @@ impl Plugin for Gain {
                             .allow_zoom(false)
                             .allow_scroll(true)
                             .height(310.0)
-                            .width(835.0)
+                            .width(855.0)
                             .allow_drag(false)
                             .show(ui, |plot_ui| {
                                 // Draw the sum line first so it's furthest behind
-                                if *sum_used.lock() {
+                                if !are_equal {
                                     plot_ui.line(sum_line);
                                 }
+
                                 // Draw whichever order next
                                 if *ontop.lock() {
                                     plot_ui.line(line);
@@ -330,96 +336,85 @@ impl Plugin for Gain {
         &mut self,
         buffer: &mut Buffer,
         aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext<Self>,
+        context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         //widgets::ParamEvent
         // Buffer level
 
         // Only process if the GUI is open
         if self.params.editor_state.is_open() {
-
+           
             // Reset this every buffer process
             self.skip_counter = 0;
-                    
-            // Clear the sum_samples vector
-            self.sum_samples.lock().clear();
 
-            if aux.inputs.get(0).is_some() {
-                // Aux input allowed
-                self.aux_used = Arc::new(Mutex::new(true));
-                self.sum_used = Arc::new(Mutex::new(true));
-
-                // Process the sidechain and main audio - Had to make this mutable since iter does not exist on this impl
-                for (mut aux_channel_samples, mut channel_samples) in aux.inputs[0].iter_samples().zip(buffer.iter_samples()) {
-                    for (aux_sample, sample) in aux_channel_samples.iter_mut().zip(channel_samples.iter_mut()) {
+            // Process the sidechain
+            for aux_channel_samples in aux.inputs[0].iter_samples() {
+                for aux_sample in aux_channel_samples {
+                    // Only grab X samples to "optimize"
+                    if self.skip_counter % self.params.h_scale.value() == 0 {
                         // Apply gain
                         let visual_sample = *aux_sample * self.params.free_gain.smoothed.next();
-                        let visual_sample2 = *sample * self.params.free_gain.smoothed.next();
-                        let sum_sample = visual_sample + visual_sample2;
+                        if visual_sample.abs() > 1.0 {self.is_clipping.store(120.0, Ordering::Relaxed);}
 
-                        // Set our clipping line timer variable
-                        if visual_sample.abs() > 1.0 || visual_sample2.abs() > 1.0 {
-                            self.is_clipping.store(120.0, Ordering::Relaxed);
+                        // Update our samples vector for oscilloscope
+                        let mut aux_guard = self.aux_samples.lock();
+                        
+                        if *self.sync_var.lock() {
+                            aux_guard.insert(0,AtomicF32::new(visual_sample));
                         }
-                    
-                        // Only grab X samples to "optimize"
-                        if self.skip_counter % self.params.h_scale.value() == 0 {
-                            // Update aux_samples vector for oscilloscope
-                            let mut aux_guard = self.aux_samples.lock();
+                        else {
                             aux_guard.push(AtomicF32::new(visual_sample));
-                        
-                            // Update samples vector for oscilloscope
-                            let mut guard = self.samples.lock();
-                            guard.push(AtomicF32::new(visual_sample2));
-                        
-                            // Update sum_samples vector for oscilloscope
-                            let mut sum_guard = self.sum_samples.lock();
-                            sum_guard.push(AtomicF32::new(sum_sample));
-                        
-                            // Limit the size of the vectors to X elements
-                            let scroll = self.params.scrollspeed.value() as usize;
-                            if aux_guard.len() > scroll {
-                                let trim_amount = aux_guard.len() - scroll;
+                        }
+
+                        // Limit the size of the vector to X elements
+                        let scroll = self.params.scrollspeed.value() as usize;
+                        if aux_guard.len() > scroll {
+                            let trim_amount = aux_guard.len() - scroll;
+                            if *self.sync_var.lock() {
+                                aux_guard.truncate(trim_amount);
+                            }
+                            else {
                                 aux_guard.drain(0..=trim_amount);
-                            }
-                            if guard.len() > scroll {
-                                let trim_amount = guard.len() - scroll;
-                                guard.drain(0..=trim_amount);
-                            }
-                            if sum_guard.len() > scroll {
-                                let trim_amount = sum_guard.len() - scroll;
-                                sum_guard.drain(0..=trim_amount);
                             }
                         }
                         self.skip_counter += 1;
                     }
                 }
             }
-            else {
-                self.aux_used = Arc::new(Mutex::new(false));
-                self.sum_used = Arc::new(Mutex::new(false));
 
-                // Process the sidechain and main audio - Had to make this mutable since iter does not exist on this impl
-                for mut channel_samples in buffer.iter_samples() {
-                    for sample in channel_samples.iter_mut() {
+            // Reset this every buffer process
+            self.skip_counter = 0;
+
+            // Process the main audio
+            for channel_samples in buffer.iter_samples() {
+                for sample in channel_samples {
+                    if *self.sync_var.lock() {
+                        let mut current_bar_position: f32 = context.transport().pos_beats().unwrap() as f32;
+                        current_bar_position = (current_bar_position * 100.0).round() / 100.0;
+                        if  current_bar_position % 1.0 == 0.0 {
+                            self.samples.lock().iter_mut().map(|x| *x = AtomicF32::new(0.0)).count();
+                            self.aux_samples.lock().iter_mut().map(|x| *x = AtomicF32::new(0.0)).count();
+                        }
+                    }
+
+                    // Only grab X samples to "optimize"
+                    if self.skip_counter % self.params.h_scale.value() == 0 {
                         // Apply gain
                         let visual_sample2 = *sample * self.params.free_gain.smoothed.next();
-
-                        // Set our clipping line timer variable
-                        if visual_sample2.abs() > 1.0 {
-                            self.is_clipping.store(120.0, Ordering::Relaxed);
-                        }
+                        if visual_sample2.abs() > 1.0 {self.is_clipping.store(120.0, Ordering::Relaxed);}
                     
-                        // Only grab X samples to "optimize"
-                        if self.skip_counter % self.params.h_scale.value() == 0 {
-                            // Update samples vector for oscilloscope
-                            let mut guard = self.samples.lock();
-                            guard.push(AtomicF32::new(visual_sample2));
+                        // Update our samples vector for oscilloscope
+                        let mut guard = self.samples.lock();
+                        guard.push(AtomicF32::new(visual_sample2));
                         
-                            // Limit the size of the vectors to X elements
-                            let scroll = self.params.scrollspeed.value() as usize;
-                            if guard.len() > scroll {
-                                let trim_amount = guard.len() - scroll;
+                        // Limit the size of the vector to X elements
+                        let scroll = self.params.scrollspeed.value() as usize;
+                        if guard.len() > scroll {
+                            let trim_amount = guard.len() - scroll;
+                            if *self.sync_var.lock() {
+                                guard.truncate(trim_amount);
+                            }
+                            else {
                                 guard.drain(0..=trim_amount);
                             }
                         }
@@ -432,6 +427,8 @@ impl Plugin for Gain {
         ProcessStatus::Normal
     }
 }
+
+
 
 impl ClapPlugin for Gain {
     const CLAP_ID: &'static str = "com.ardura.scrollscope";

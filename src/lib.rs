@@ -19,9 +19,11 @@ pub struct Gain {
 
     // Counter for scaling sample skipping
     skip_counter: i32,
-
     toggle_ontop: Arc<Mutex<bool>>,
     is_clipping: Arc<AtomicF32>,
+    // TODO: Add aux used and sum used that adjusts based on aux input
+    aux_used: Arc<Mutex<bool>>,
+    sum_used: Arc<Mutex<bool>>,
 
     user_color_primary: Arc<Mutex<Color32>>,
     user_color_secondary: Arc<Mutex<Color32>>,
@@ -65,6 +67,8 @@ impl Default for Gain {
             user_color_sum: Arc::new(Mutex::new(YELLOW)),
             user_color_background: Arc::new(Mutex::new(DARK)),
             toggle_ontop: Arc::new(Mutex::new(false)),
+            aux_used: Arc::new(Mutex::new(false)),
+            sum_used: Arc::new(Mutex::new(false)),
             is_clipping: Arc::new(AtomicF32::new(0.0)),
             samples: Arc::new(Mutex::new(Vec::new())),
             aux_samples: Arc::new(Mutex::new(Vec::new())),
@@ -226,6 +230,9 @@ impl Plugin for Gain {
                             let mut sum_line = Line::new(PlotPoints::default());
                             let aux_line;// = Line::new(PlotPoints::default());
 
+                            let mut aux_line: Line = Line::new(PlotPoints::default());
+                            let mut sum_line: Line = Line::new(PlotPoints::default());
+
                             // Primary Input
                             let data: PlotPoints = samples
                                 .iter()
@@ -269,7 +276,7 @@ impl Plugin for Gain {
                                      }).collect();
                                 sum_line = Line::new(sum_data).color(*sum_line_color).stroke(Stroke::new(0.7,*sum_line_color));
                             }
-                            
+
                             egui::plot::Plot::new("Oscilloscope")
                             .show_background(false)
                             .include_x(400.0)
@@ -286,14 +293,19 @@ impl Plugin for Gain {
                                 if !are_equal {
                                     plot_ui.line(sum_line);
                                 }
-                                
+
                                 // Draw whichever order next
                                 if *ontop.lock() {
                                     plot_ui.line(line);
-                                    plot_ui.line(aux_line);
+                                    if *aux_used.lock()
+                                    {
+                                        plot_ui.line(aux_line);
+                                    }
                                 }
                                 else {
-                                    plot_ui.line(aux_line);
+                                    if *aux_used.lock() {
+                                        plot_ui.line(aux_line);
+                                    }
                                     plot_ui.line(line);
                                 }
                                 // Draw our clipping guides if needed
@@ -365,13 +377,13 @@ impl Plugin for Gain {
                                 aux_guard.drain(0..=trim_amount);
                             }
                         }
+                        self.skip_counter += 1;
                     }
-                    self.skip_counter += 1;
                 }
             }
 
-                // Reset this every buffer process
-                self.skip_counter = 0;
+            // Reset this every buffer process
+            self.skip_counter = 0;
 
             // Process the main audio
             for channel_samples in buffer.iter_samples() {
@@ -406,8 +418,8 @@ impl Plugin for Gain {
                                 guard.drain(0..=trim_amount);
                             }
                         }
+                        self.skip_counter += 1;
                     }
-                    self.skip_counter += 1;
                 }
             }
         }

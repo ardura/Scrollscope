@@ -19,11 +19,8 @@ pub struct Gain {
 
     // Counter for scaling sample skipping
     skip_counter: i32,
-    toggle_ontop: Arc<Mutex<bool>>,
+    swap_draw_order: Arc<Mutex<bool>>,
     is_clipping: Arc<AtomicF32>,
-    // TODO: Add aux used and sum used that adjusts based on aux input
-    aux_used: Arc<Mutex<bool>>,
-    sum_used: Arc<Mutex<bool>>,
 
     user_color_primary: Arc<Mutex<Color32>>,
     user_color_secondary: Arc<Mutex<Color32>>,
@@ -66,9 +63,7 @@ impl Default for Gain {
             user_color_secondary: Arc::new(Mutex::new(CYAN)),
             user_color_sum: Arc::new(Mutex::new(YELLOW)),
             user_color_background: Arc::new(Mutex::new(DARK)),
-            toggle_ontop: Arc::new(Mutex::new(false)),
-            aux_used: Arc::new(Mutex::new(false)),
-            sum_used: Arc::new(Mutex::new(false)),
+            swap_draw_order: Arc::new(Mutex::new(false)),
             is_clipping: Arc::new(AtomicF32::new(0.0)),
             samples: Arc::new(Mutex::new(Vec::new())),
             aux_samples: Arc::new(Mutex::new(Vec::new())),
@@ -100,8 +95,8 @@ impl Default for GainParams {
             // scrollspeed parameter
             scrollspeed: IntParam::new(
                 "Samples",
-                3500,
-                    IntRange::Linear {min: 2000, max: 20000 },
+                130,
+                    IntRange::Linear {min: 160, max: 2000 },
             ),
 
             // scaling parameter
@@ -142,7 +137,7 @@ impl Plugin for Gain {
         let params = self.params.clone();
         let samples = self.samples.clone();
         let aux_samples = self.aux_samples.clone();
-        let ontop = self.toggle_ontop.clone();
+        let ontop = self.swap_draw_order.clone();
         let is_clipping = self.is_clipping.clone();
         let sync_var = self.sync_var.clone();
         let user_color_primary = self.user_color_primary.clone();
@@ -225,12 +220,9 @@ impl Plugin for Gain {
                             
 
                         ui.allocate_ui(egui::Vec2::splat(100.0), |ui| {
-                            let samples = samples.lock();
-                            let aux_samples = aux_samples.lock();
-                            let mut sum_line = Line::new(PlotPoints::default());
-                            let aux_line;// = Line::new(PlotPoints::default());
-
-                            let mut aux_line: Line = Line::new(PlotPoints::default());
+                            let samples: egui::mutex::MutexGuard<Vec<AtomicF32>> = samples.lock();
+                            let aux_samples: egui::mutex::MutexGuard<Vec<AtomicF32>> = aux_samples.lock();
+                            let aux_line: Line;
                             let mut sum_line: Line = Line::new(PlotPoints::default());
 
                             // Primary Input
@@ -279,7 +271,7 @@ impl Plugin for Gain {
 
                             egui::plot::Plot::new("Oscilloscope")
                             .show_background(false)
-                            .include_x(400.0)
+                            .include_x(130.0)
                             .include_y(-1.0)
                             .include_y(1.0)
                             .center_y_axis(true)
@@ -297,22 +289,17 @@ impl Plugin for Gain {
                                 // Draw whichever order next
                                 if *ontop.lock() {
                                     plot_ui.line(line);
-                                    if *aux_used.lock()
-                                    {
-                                        plot_ui.line(aux_line);
-                                    }
+                                    plot_ui.line(aux_line);
                                 }
                                 else {
-                                    if *aux_used.lock() {
-                                        plot_ui.line(aux_line);
-                                    }
+                                    plot_ui.line(aux_line);
                                     plot_ui.line(line);
                                 }
                                 // Draw our clipping guides if needed
                                 let clip_counter = is_clipping.load(Ordering::Relaxed);
                                 if clip_counter > 0.0 {
-                                    plot_ui.hline(HLine::new(1.0).color(Color32::RED).stroke(Stroke::new(3.0, Color32::RED)));
-                                    plot_ui.hline(HLine::new(-1.0).color(Color32::RED).stroke(Stroke::new(3.0, Color32::RED)));
+                                    plot_ui.hline(HLine::new(1.0).color(Color32::RED).stroke(Stroke::new(1.0, Color32::RED)));
+                                    plot_ui.hline(HLine::new(-1.0).color(Color32::RED).stroke(Stroke::new(1.0, Color32::RED)));
                                     is_clipping.store(clip_counter - 1.0, Ordering::Relaxed);
                                 }
                             })
@@ -334,7 +321,7 @@ impl Plugin for Gain {
 
     fn process(
         &mut self,
-        buffer: &mut Buffer,
+        buffer: &mut nih_plug::prelude::Buffer<'_>,
         aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
@@ -358,24 +345,14 @@ impl Plugin for Gain {
 
                         // Update our samples vector for oscilloscope
                         let mut aux_guard = self.aux_samples.lock();
+                        aux_guard.push(AtomicF32::new(visual_sample));
                         
-                        if *self.sync_var.lock() {
-                            aux_guard.insert(0,AtomicF32::new(visual_sample));
-                        }
-                        else {
-                            aux_guard.push(AtomicF32::new(visual_sample));
-                        }
 
                         // Limit the size of the vector to X elements
                         let scroll = self.params.scrollspeed.value() as usize;
                         if aux_guard.len() > scroll {
                             let trim_amount = aux_guard.len() - scroll;
-                            if *self.sync_var.lock() {
-                                aux_guard.truncate(trim_amount);
-                            }
-                            else {
-                                aux_guard.drain(0..=trim_amount);
-                            }
+                            aux_guard.drain(0..=trim_amount);
                         }
                         self.skip_counter += 1;
                     }
@@ -405,18 +382,14 @@ impl Plugin for Gain {
                     
                         // Update our samples vector for oscilloscope
                         let mut guard = self.samples.lock();
+                        //guard.push(AtomicF32::new(visual_sample2));
                         guard.push(AtomicF32::new(visual_sample2));
                         
                         // Limit the size of the vector to X elements
                         let scroll = self.params.scrollspeed.value() as usize;
                         if guard.len() > scroll {
                             let trim_amount = guard.len() - scroll;
-                            if *self.sync_var.lock() {
-                                guard.truncate(trim_amount);
-                            }
-                            else {
-                                guard.drain(0..=trim_amount);
-                            }
+                            guard.drain(0..=trim_amount);
                         }
                         self.skip_counter += 1;
                     }

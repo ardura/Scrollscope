@@ -80,7 +80,7 @@ impl Default for Gain {
 impl Default for GainParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(900, 400),
+            editor_state: EguiState::from_size(900, 500),
 
             // Input gain dB parameter (free as in unrestricted nums)
             free_gain: FloatParam::new(
@@ -196,18 +196,18 @@ impl Plugin for Gain {
                             ui.horizontal(|ui| {
                                 ui.collapsing("Scrollscope",|ui| {
                                     ui.horizontal(|ui| {
-                                        ui.label("These don't save yet.");
+                                        ui.label("These don't save.");
                                         ui.separator();
                                         ui.color_edit_button_srgba(&mut primary_line_color);
                                         ui.color_edit_button_srgba(&mut aux_line_color);
                                         ui.color_edit_button_srgba(&mut sum_line_color);
                                         ui.color_edit_button_srgba(&mut background_color);
                                         ui.add_space(4.0);
-                                        ui.label("Programmed by Ardura with nih-plug and egui");
+                                        ui.label("by Ardura with nih-plug and egui");
                                     });
                                 });
 
-                                ui.add(widgets::ParamSlider::for_param(&params.free_gain, setter).with_width(60.0));
+                                let gain_handle = ui.add(widgets::ParamSlider::for_param(&params.free_gain, setter).with_width(60.0));
 
                                 ui.add_space(4.0);
 
@@ -218,16 +218,17 @@ impl Plugin for Gain {
                                 let _scale_handle = ui.add(widgets::ParamSlider::for_param(&params.h_scale, setter).with_width(60.0));
 
                                 ui.add_space(4.0);
-                                let swap_response = ui.checkbox(&mut ontop.lock(), "Swap").on_hover_text("Change the drawing order of waveforms");
+                                let _swap_response = ui.checkbox(&mut ontop.lock(), "Swap").on_hover_text("Change the drawing order of waveforms");
 
                                 let sync_response = ui.checkbox(&mut sync_var.lock(), "Sync Beat").on_hover_text("Lock drawing to beat");
 
                                 let dir_response = ui.checkbox(&mut dir_var.lock(), "Flip").on_hover_text("Flip direction of oscilloscope");
 
+                                if gain_handle.changed() {
+                                    sum_line = Line::new(PlotPoints::default());
+                                }
                                 // Reset our line on change
-                                if swap_response.changed() || 
-                                    sync_response.changed() || 
-                                    dir_response.changed()
+                                if sync_response.changed() || dir_response.changed()
                                 {
                                     sum_line = Line::new(PlotPoints::default());
                                     aux_line = Line::new(PlotPoints::default());
@@ -298,7 +299,7 @@ impl Plugin for Gain {
                             .center_y_axis(true)
                             .allow_zoom(false)
                             .allow_scroll(true)
-                            .height(380.0)
+                            .height(480.0)
                             .width(900.0)
                             .allow_drag(false)
                             // Blank out the X axis labels

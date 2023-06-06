@@ -80,7 +80,7 @@ impl Default for Gain {
 impl Default for GainParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(900, 500),
+            editor_state: EguiState::from_size(1040, 520),
 
             // Input gain dB parameter (free as in unrestricted nums)
             free_gain: FloatParam::new(
@@ -300,7 +300,7 @@ impl Plugin for Gain {
                             .allow_zoom(false)
                             .allow_scroll(true)
                             .height(480.0)
-                            .width(900.0)
+                            .width(1040.0)
                             .allow_drag(false)
                             // Blank out the X axis labels
                             .x_axis_formatter(|_, _range: &RangeInclusive<f64>| {String::new()})

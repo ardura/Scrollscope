@@ -22,6 +22,7 @@ pub struct Gain {
     skip_counter: i32,
     swap_draw_order: Arc<Mutex<bool>>,
     is_clipping: Arc<AtomicF32>,
+    direction: Arc<Mutex<bool>>,
 
     user_color_primary: Arc<Mutex<Color32>>,
     user_color_secondary: Arc<Mutex<Color32>>,
@@ -66,6 +67,7 @@ impl Default for Gain {
             user_color_sum: Arc::new(Mutex::new(YELLOW)),
             user_color_background: Arc::new(Mutex::new(DARK)),
             swap_draw_order: Arc::new(Mutex::new(false)),
+            direction: Arc::new(Mutex::new(false)),
             is_clipping: Arc::new(AtomicF32::new(0.0)),
             samples: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             aux_samples: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
@@ -143,6 +145,7 @@ impl Plugin for Gain {
         let ontop = self.swap_draw_order.clone();
         let is_clipping = self.is_clipping.clone();
         let sync_var = self.sync_var.clone();
+        let dir_var = self.direction.clone();
         let user_color_primary = self.user_color_primary.clone();
         let user_color_secondary = self.user_color_secondary.clone();
         let user_color_sum = self.user_color_sum.clone();
@@ -189,8 +192,8 @@ impl Plugin for Gain {
                         let mut sum_line: Line = Line::new(PlotPoints::default());
                         let mut aux_line: Line = Line::new(PlotPoints::default());
                         let mut line: Line = Line::new(PlotPoints::default());
-                        let samples: egui::mutex::MutexGuard<VecDeque<f32>> = samples.lock();
-                        let aux_samples: egui::mutex::MutexGuard<VecDeque<f32>> = aux_samples.lock();
+                        let mut samples: egui::mutex::MutexGuard<VecDeque<f32>> = samples.lock();
+                        let mut aux_samples: egui::mutex::MutexGuard<VecDeque<f32>> = aux_samples.lock();
 
                         ui.vertical(|ui | {
                             ui.horizontal(|ui| {
@@ -222,18 +225,29 @@ impl Plugin for Gain {
 
                                 let sync_response = ui.checkbox(&mut sync_var.lock(), "Sync Beat").on_hover_text("Lock drawing to beat");
 
-                                // Reset our line on change (This doesn't work the way I thought it would)
+                                let dir_response = ui.checkbox(&mut dir_var.lock(), "Flip").on_hover_text("Flip direction of oscilloscope");
+
+                                // Reset our line on change
                                 if swap_response.changed() || 
                                     sync_response.changed() || 
-                                    scale_handle.changed() ||
-                                    scroll_handle.changed()
+                                    //scale_handle.changed() ||
+                                    //scroll_handle.changed() ||
+                                    dir_response.changed()
                                 {
                                     sum_line = Line::new(PlotPoints::default());
                                     aux_line = Line::new(PlotPoints::default());
                                     line = Line::new(PlotPoints::default());
+                                    samples.clear();
+                                    aux_samples.clear();
                                 }
                             });
                         });
+
+                        // Reverse our order for drawing if desired (I know this is "slow")
+                        if *dir_var.lock() {
+                            samples.make_contiguous().reverse();
+                            aux_samples.make_contiguous().reverse();
+                        }
 
                         ui.allocate_ui(egui::Vec2::new(900.0,380.0), |ui| {
                             // Primary Input
@@ -279,7 +293,7 @@ impl Plugin for Gain {
                                         }
                                         [x,y]
                                      }).collect();
-                                sum_line = Line::new(sum_data).color(*sum_line_color).stroke(Stroke::new(0.9,*sum_line_color));
+                            sum_line = Line::new(sum_data).color(*sum_line_color).stroke(Stroke::new(0.9,*sum_line_color));
                             
                             egui::plot::Plot::new("Oscilloscope")
                             .show_background(false)
@@ -315,6 +329,12 @@ impl Plugin for Gain {
                             })
                             .response;
                         });
+
+                        // Put things back after drawing so process() isn't broken
+                        if *dir_var.lock() {
+                            samples.make_contiguous().reverse();
+                            aux_samples.make_contiguous().reverse();
+                        }
                 });
             },
         )

@@ -1,7 +1,7 @@
 use atomic_float::AtomicF32;
 use nih_plug::{prelude::*};
 use nih_plug_egui::{create_egui_editor, egui::{self, mutex::{Mutex}, plot::{Line, PlotPoints, HLine}, Color32, Stroke, Rect, Rounding}, widgets, EguiState};
-use std::{collections::VecDeque, sync::atomic::AtomicI32};
+use std::{collections::VecDeque, sync::atomic::AtomicI32, ops::RangeInclusive};
 use std::{sync::{Arc, atomic::{Ordering}}};
 
 /**************************************************
@@ -99,16 +99,16 @@ impl Default for GainParams {
 
             // scrollspeed parameter
             scrollspeed: IntParam::new(
-                "Samples",
-                2000,
-                    IntRange::Linear {min: 200, max: 5000 },
-            ).with_unit(" Samples"),
+                "Length",
+                100,
+                    IntRange::Linear {min: 1, max: 800 },
+            ).with_unit(" ms"),
 
             // scaling parameter
             h_scale: IntParam::new(
                 "Scale",
-                100,
-                    IntRange::Linear {min: 1, max: 300 },
+                24,
+                    IntRange::Linear {min: 1, max: 150 },
             ).with_unit(" Skip"),
         }
     }
@@ -214,11 +214,11 @@ impl Plugin for Gain {
 
                                 ui.add_space(4.0);
 
-                                let scroll_handle = ui.add(widgets::ParamSlider::for_param(&params.scrollspeed, setter).with_width(60.0));
+                                let _scroll_handle = ui.add(widgets::ParamSlider::for_param(&params.scrollspeed, setter).with_width(60.0));
 
                                 ui.add_space(4.0);
 
-                                let scale_handle = ui.add(widgets::ParamSlider::for_param(&params.h_scale, setter).with_width(60.0));
+                                let _scale_handle = ui.add(widgets::ParamSlider::for_param(&params.h_scale, setter).with_width(60.0));
 
                                 ui.add_space(4.0);
                                 let swap_response = ui.checkbox(&mut ontop.lock(), "Swap").on_hover_text("Change the drawing order of waveforms");
@@ -230,8 +230,6 @@ impl Plugin for Gain {
                                 // Reset our line on change
                                 if swap_response.changed() || 
                                     sync_response.changed() || 
-                                    //scale_handle.changed() ||
-                                    //scroll_handle.changed() ||
                                     dir_response.changed()
                                 {
                                     sum_line = Line::new(PlotPoints::default());
@@ -306,6 +304,10 @@ impl Plugin for Gain {
                             .height(380.0)
                             .width(900.0)
                             .allow_drag(false)
+                            // Blank out the X axis labels
+                            .x_axis_formatter(|_, _range: &RangeInclusive<f64>| {String::new()})
+                            // Format hover to blank or value
+                            .label_formatter(|_, _| {"".to_owned()})
                             .show(ui, |plot_ui| {
                                 // Draw the sum line first so it's furthest behind
                                 plot_ui.line(sum_line);
@@ -357,7 +359,6 @@ impl Plugin for Gain {
     ) -> ProcessStatus {
         // Only process if the GUI is open
         if self.params.editor_state.is_open() {
-           
             // Reset this every buffer process
             self.skip_counter = 0;
 
@@ -365,7 +366,7 @@ impl Plugin for Gain {
             for (mut aux_channel_samples, mut channel_samples) in aux.inputs[0].iter_samples().zip(buffer.iter_samples()) {
                 for (aux_sample, sample) in aux_channel_samples.iter_mut().zip(channel_samples.iter_mut()) {
                     
-                    // If we are beat syncinc - this resets our position in time accordingly
+                    // If we are beat syncing - this resets our position in time accordingly
                     if *self.sync_var.lock() {
                         // Make the current bar precision a one thousandth of a beat - I couldn't find a better way to do this
                         let mut current_bar_position: f32 = context.transport().pos_beats().unwrap() as f32;
@@ -429,8 +430,9 @@ impl Plugin for Gain {
                             aux_guard.push_front(visual_aux_sample);
                         }
 
+                        // ms = samples/samplerate so ms*samplerate = samples
                         // Limit the size of the vecdeques to X elements
-                        let scroll: usize = self.params.scrollspeed.value() as usize;
+                        let scroll: usize = (context.transport().sample_rate as usize/1000.0 as usize) * self.params.scrollspeed.value() as usize;
                         if guard.len() != scroll {
                             guard.resize(scroll, 0.0);
                         }

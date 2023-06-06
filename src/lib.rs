@@ -156,10 +156,7 @@ impl Plugin for Gain {
             |_, _| {},
             move |egui_ctx, setter, _state| {
                 egui::CentralPanel::default()
-                    // I couldn't figure out getting this to update
-                    //.frame(Frame::none().fill(*user_color_background.lock()))
                     .show(egui_ctx, |ui| {
-
                         // Default colors
                         let mut primary_line_color = user_color_primary.lock();
                         let mut aux_line_color = user_color_secondary.lock();
@@ -369,8 +366,8 @@ impl Plugin for Gain {
                     // If we are beat syncing - this resets our position in time accordingly
                     if *self.sync_var.lock() {
                         // Make the current bar precision a one thousandth of a beat - I couldn't find a better way to do this
-                        let mut current_bar_position: f32 = context.transport().pos_beats().unwrap() as f32;
-                        current_bar_position = (current_bar_position * 1000.0).round() / 1000.0;
+                        let mut current_bar_position: f64 = context.transport().pos_beats().unwrap();
+                        current_bar_position = (current_bar_position * 10000.0 as f64).round() / 10000.0 as f64;
                         if  current_bar_position % 1.0 == 0.0 {
                             // Reset our index to the sample vecdeques
                             self.in_place_index = Arc::new(AtomicI32::new(0));

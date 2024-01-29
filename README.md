@@ -2,6 +2,15 @@
 
 Available as a VST3 and CLAP
 
+## Example
+
+![image](https://github.com/ardura/Scrollscope/assets/31751444/7bc3edc3-81f3-410c-b85d-9269284f4dc5)
+Orange is the kick, blue is the sidechain signal (click swap to put it behind the orange signal, and yellow is the sum!
+
+Note this can take a sidechain input! Do the routing in FL in plugin processing tab:
+![image](https://github.com/ardura/Scrollscope/assets/31751444/6f7c6c75-afa0-47a4-8914-8d1c899ad572)
+
+
 ## Installation
 VST3: Copy the vst3 file to C:\Program Files\Common Files\VST3
 CLAP: Copy the CLAP file to C:\Program Files\Common Files\CLAP

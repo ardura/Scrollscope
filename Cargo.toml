@@ -16,8 +16,8 @@ crate-type = ["cdylib","lib"]
 [dependencies]
 atomic_float = "0.1"
 egui = "0.21.0"
-nih_plug = { path = "../nih-plug-master", features = ["assert_process_allocs","standalone"] }
-nih_plug_egui = { path = "../nih-plug-master/nih_plug_egui" }
+nih_plug = { git = "https://github.com/ardura/nih-plug.git", rev = "e59dc33aaf0c06c834dba0821f6e269e6377f362", features = ["assert_process_allocs"] }
+nih_plug_egui = { git = "https://github.com/ardura/nih-plug.git", rev = "e59dc33aaf0c06c834dba0821f6e269e6377f362" }
 
 [profile.release]
 lto = "thin"

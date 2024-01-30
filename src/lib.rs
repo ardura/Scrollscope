@@ -376,6 +376,9 @@ impl Plugin for Gain {
                         let mut current_beat: f64 = context.transport().pos_beats().unwrap();
 
                         if *self.alt_sync.lock() {
+                            // This is scaled a little more to catch things earlier due to thread timing in Ardour
+                            // This should still play well with other DAWs using this timing
+                            current_beat = ((current_beat + 0.036) * 100.0 as f64).round() / 100.0 as f64;
                             let current_bar = current_beat as i64;
                             // Tracks based off beat number for other daws - this is a mutex instead of atomic for locking
                             if *self.alt_sync_beat.lock() != current_bar {
@@ -385,7 +388,7 @@ impl Plugin for Gain {
                             }
                         } else {
                             // Works in FL Studio but not other daws, hence the previous couple of lines
-                            current_beat = (current_beat * 1000.0 as f64).round() / 1000.0 as f64;
+                            current_beat = (current_beat * 10000.0 as f64).round() / 10000.0 as f64;
                             if current_beat % 1.0 == 0.0 {
                                 // Reset our index to the sample vecdeques
                                 self.in_place_index = Arc::new(AtomicI32::new(0));

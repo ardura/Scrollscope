@@ -228,7 +228,7 @@ impl Plugin for Gain {
                                     sum_line = Line::new(PlotPoints::default());
                                 }
                                 // Reset our line on change
-                                if sync_response.changed() || dir_response.changed()
+                                if sync_response.clicked() || dir_response.clicked()
                                 {
                                     sum_line = Line::new(PlotPoints::default());
                                     aux_line = Line::new(PlotPoints::default());

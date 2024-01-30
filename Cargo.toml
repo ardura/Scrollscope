@@ -25,6 +25,7 @@ strip = "symbols"
 
 [profile.profiling]
 inherits = "release"
-opt-level = 2
+lto = "off"
+opt-level = 0
 debug = true
 strip = "none"

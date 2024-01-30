@@ -35,6 +35,8 @@ pub struct Gain {
 
     // Syncing for beats
     sync_var: Arc<Mutex<bool>>,
+    alt_sync: Arc<Mutex<bool>>,
+    alt_sync_beat: Arc<AtomicI32>,
     in_place_index: Arc<AtomicI32>,
 }
 
@@ -72,6 +74,8 @@ impl Default for Gain {
             samples: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             aux_samples: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             sync_var: Arc::new(Mutex::new(false)),
+            alt_sync: Arc::new(Mutex::new(false)),
+            alt_sync_beat: Arc::new(AtomicI32::new(0)),
             in_place_index: Arc::new(AtomicI32::new(0)),
         }
     }
@@ -145,6 +149,7 @@ impl Plugin for Gain {
         let ontop = self.swap_draw_order.clone();
         let is_clipping = self.is_clipping.clone();
         let sync_var = self.sync_var.clone();
+        let alt_sync = self.alt_sync.clone();
         let dir_var = self.direction.clone();
         let user_color_primary = self.user_color_primary.clone();
         let user_color_secondary = self.user_color_secondary.clone();
@@ -221,6 +226,7 @@ impl Plugin for Gain {
                                 let _swap_response = ui.checkbox(&mut ontop.lock(), "Swap").on_hover_text("Change the drawing order of waveforms");
 
                                 let sync_response = ui.checkbox(&mut sync_var.lock(), "Sync Beat").on_hover_text("Lock drawing to beat");
+                                let alt_sync = ui.checkbox(&mut alt_sync.lock(), "Alt. Sync").on_hover_text("Try this if Sync doesn't work");
 
                                 let dir_response = ui.checkbox(&mut dir_var.lock(), "Flip").on_hover_text("Flip direction of oscilloscope");
 
@@ -228,7 +234,7 @@ impl Plugin for Gain {
                                     sum_line = Line::new(PlotPoints::default());
                                 }
                                 // Reset our line on change
-                                if sync_response.clicked() || dir_response.clicked()
+                                if sync_response.clicked() || dir_response.clicked() || alt_sync.clicked()
                                 {
                                     sum_line = Line::new(PlotPoints::default());
                                     aux_line = Line::new(PlotPoints::default());
@@ -368,8 +374,19 @@ impl Plugin for Gain {
                     if *self.sync_var.lock() {
                         // Make the current bar precision a one thousandth of a beat - I couldn't find a better way to do this
                         let mut current_bar_position: f64 = context.transport().pos_beats().unwrap();
-                        current_bar_position = (current_bar_position * 10000.0 as f64).round() / 10000.0 as f64;
-                        if  current_bar_position % 1.0 == 0.0 {
+
+                        if *self.alt_sync.lock() {
+                            // Tracks based off beat floor number
+                            if self.alt_sync_beat.load(Ordering::Relaxed) != current_bar_position.floor() as i32 {
+                                self.alt_sync_beat.store(current_bar_position.floor() as i32,Ordering::Relaxed);
+                            }
+                            current_bar_position = 1.0;
+                        } else {
+                            // Works in FL Studio but not other daws, hence the previous couple of lines
+                            current_bar_position = (current_bar_position * 1000.0 as f64).round() / 1000.0 as f64;
+                        }
+
+                        if current_bar_position % 1.0 == 0.0 {
                             // Reset our index to the sample vecdeques
                             self.in_place_index = Arc::new(AtomicI32::new(0));
                             self.skip_counter = 0;

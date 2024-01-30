@@ -36,7 +36,7 @@ pub struct Gain {
     // Syncing for beats
     sync_var: Arc<Mutex<bool>>,
     alt_sync: Arc<Mutex<bool>>,
-    alt_sync_beat: Arc<AtomicI32>,
+    alt_sync_beat: Arc<Mutex<i64>>,
     in_place_index: Arc<AtomicI32>,
 }
 
@@ -75,7 +75,7 @@ impl Default for Gain {
             aux_samples: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             sync_var: Arc::new(Mutex::new(false)),
             alt_sync: Arc::new(Mutex::new(false)),
-            alt_sync_beat: Arc::new(AtomicI32::new(0)),
+            alt_sync_beat: Arc::new(Mutex::new(0)),
             in_place_index: Arc::new(AtomicI32::new(0)),
         }
     }
@@ -373,23 +373,24 @@ impl Plugin for Gain {
                     // If we are beat syncing - this resets our position in time accordingly
                     if *self.sync_var.lock() {
                         // Make the current bar precision a one thousandth of a beat - I couldn't find a better way to do this
-                        let mut current_bar_position: f64 = context.transport().pos_beats().unwrap();
+                        let mut current_beat: f64 = context.transport().pos_beats().unwrap();
 
                         if *self.alt_sync.lock() {
-                            // Tracks based off beat floor number
-                            if self.alt_sync_beat.load(Ordering::Relaxed) != current_bar_position.floor() as i32 {
-                                self.alt_sync_beat.store(current_bar_position.floor() as i32,Ordering::Relaxed);
+                            let current_bar = current_beat as i64;
+                            // Tracks based off beat number for other daws - this is a mutex instead of atomic for locking
+                            if *self.alt_sync_beat.lock() != current_bar {
+                                self.in_place_index = Arc::new(AtomicI32::new(0));
+                                self.skip_counter = 0;
+                                *self.alt_sync_beat.lock() = current_bar;
                             }
-                            current_bar_position = 1.0;
                         } else {
                             // Works in FL Studio but not other daws, hence the previous couple of lines
-                            current_bar_position = (current_bar_position * 1000.0 as f64).round() / 1000.0 as f64;
-                        }
-
-                        if current_bar_position % 1.0 == 0.0 {
-                            // Reset our index to the sample vecdeques
-                            self.in_place_index = Arc::new(AtomicI32::new(0));
-                            self.skip_counter = 0;
+                            current_beat = (current_beat * 1000.0 as f64).round() / 1000.0 as f64;
+                            if current_beat % 1.0 == 0.0 {
+                                // Reset our index to the sample vecdeques
+                                self.in_place_index = Arc::new(AtomicI32::new(0));
+                                self.skip_counter = 0;
+                            }
                         }
                     }
 

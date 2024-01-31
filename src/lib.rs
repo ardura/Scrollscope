@@ -240,7 +240,7 @@ impl Plugin for Gain {
 
                                 let sync_response = ui.checkbox(&mut sync_var.lock(), "Sync").on_hover_text("Lock drawing to timing");
                                 let alt_sync = ui.checkbox(&mut alt_sync.lock(), "Alt. Sync").on_hover_text("Try this if Sync doesn't work");
-                                let timing = ui.add(widgets::ParamSlider::for_param(&params.sync_timing, setter).with_width(60.0));
+                                let timing = ui.add(widgets::ParamSlider::for_param(&params.sync_timing, setter).with_width(60.0)).on_hover_text("Refresh interval when sync enabled");
 
                                 let dir_response = ui.checkbox(&mut dir_var.lock(), "Flip").on_hover_text("Flip direction of oscilloscope");
 
@@ -250,6 +250,17 @@ impl Plugin for Gain {
                                 // Reset our line on change
                                 if sync_response.clicked() || dir_response.clicked() || alt_sync.clicked() || timing.changed()
                                 {
+                                    // Keep same direction when syncing (Issue #12)
+                                    if sync_response.clicked(){
+                                        // If flip selected already, it should be deselected on this click
+                                        if *dir_var.lock() {
+                                            *dir_var.lock() = false;
+                                        }
+                                        // If flip not selected, it should now be selected
+                                        else {
+                                            *dir_var.lock() = true;
+                                        }
+                                    }
                                     sum_line = Line::new(PlotPoints::default());
                                     aux_line = Line::new(PlotPoints::default());
                                     line = Line::new(PlotPoints::default());
@@ -394,19 +405,43 @@ impl Plugin for Gain {
                             // This should still play well with other DAWs using this timing
                             current_beat = ((current_beat + 0.036) * 100.0 as f64).round() / 100.0 as f64;
                             let current_bar = current_beat as i64;
-                            // Tracks based off beat number for other daws - this is a mutex instead of atomic for locking
-                            if *self.alt_sync_beat.lock() != current_bar {
-                                self.in_place_index = Arc::new(AtomicI32::new(0));
-                                self.skip_counter = 0;
-                                *self.alt_sync_beat.lock() = current_bar;
+                            // Added in Issue #11
+                            match self.params.sync_timing.value() {
+                                BeatSync::Bar => {
+                                    // Tracks based off beat number for other daws - this is a mutex instead of atomic for locking
+                                    if *self.alt_sync_beat.lock() != current_bar && current_bar % 4 == 0 {
+                                        self.in_place_index = Arc::new(AtomicI32::new(0));
+                                        self.skip_counter = 0;
+                                        *self.alt_sync_beat.lock() = current_bar;
+                                    }
+                                },
+                                BeatSync::Beat => {
+                                    // Tracks based off beat number for other daws - this is a mutex instead of atomic for locking
+                                    if *self.alt_sync_beat.lock() != current_bar {
+                                        self.in_place_index = Arc::new(AtomicI32::new(0));
+                                        self.skip_counter = 0;
+                                        *self.alt_sync_beat.lock() = current_bar;
+                                    }
+                                },
                             }
                         } else {
                             // Works in FL Studio but not other daws, hence the previous couple of lines
                             current_beat = (current_beat * 10000.0 as f64).round() / 10000.0 as f64;
-                            if current_beat % 1.0 == 0.0 {
-                                // Reset our index to the sample vecdeques
-                                self.in_place_index = Arc::new(AtomicI32::new(0));
-                                self.skip_counter = 0;
+                            match self.params.sync_timing.value() {
+                                BeatSync::Bar => {
+                                    if current_beat % 4.0 == 0.0 {
+                                        // Reset our index to the sample vecdeques
+                                        self.in_place_index = Arc::new(AtomicI32::new(0));
+                                        self.skip_counter = 0;
+                                    }
+                                },
+                                BeatSync::Beat => {
+                                    if current_beat % 1.0 == 0.0 {
+                                        // Reset our index to the sample vecdeques
+                                        self.in_place_index = Arc::new(AtomicI32::new(0));
+                                        self.skip_counter = 0;
+                                    }
+                                },
                             }
                         }
                     }

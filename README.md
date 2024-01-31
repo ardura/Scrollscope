@@ -4,7 +4,7 @@ Available as a VST3 and CLAP
 
 ## Example
 
-![image](https://github.com/ardura/Scrollscope/assets/31751444/7bc3edc3-81f3-410c-b85d-9269284f4dc5)
+![image](https://github.com/ardura/Scrollscope/assets/31751444/5ffffda2-ebc8-47cc-8e46-dea81635e449)
 Orange is the kick, blue is the sidechain signal (click swap to put it behind the orange signal, and yellow is the sum!
 
 Note this can take a sidechain input! Do the routing in FL in plugin processing tab:
@@ -19,12 +19,12 @@ This is an oscilloscope with a few different features I’ve wanted for myself. 
 
 ## Features
 - Sidechain input graphing - simply route sidechain input from another channel
-- Zoom focus - Right click and zoom a window! Doubleclick to exit
 - Scaling signals up and down with gain
 - Displaying large or small sample sizes
 - Optimization with skipping amount configurable
 - Reordering waveforms to display main or sidechain on top
-- Beat synchronization
+- Beat synchronization and Bar Synchronization
+- Support for different DAWs with different time-tracking modes (Alt Sync option)
 - Color changes* (Does not save currently)
 
 This plugin was made possible thanks to the Nih-Plug Rust Library and the egui GUI library
@@ -34,5 +34,5 @@ This plugin was made possible thanks to the Nih-Plug Rust Library and the egui G
 After installing [Rust](https://rustup.rs/), you can compile Scrollscope as follows:
 
 ```shell
-cargo xtask bundle scrollscope --release
+cargo xtask bundle scrollscope --profile release
 ```

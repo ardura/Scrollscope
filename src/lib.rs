@@ -15,6 +15,12 @@ const CYAN: Color32 = Color32::from_rgb(14,177,210);
 const YELLOW: Color32 = Color32::from_rgb(248, 255, 31);
 const DARK: Color32 = Color32::from_rgb(40, 40, 40);
 
+#[derive(Enum, Clone, PartialEq)]
+pub enum BeatSync {
+    Beat,
+    Bar
+}
+
 pub struct Gain {
     params: Arc<GainParams>,
 
@@ -57,6 +63,10 @@ struct GainParams {
     /// Horizontal Scaling
     #[id = "scaling"]
     pub h_scale: IntParam,
+
+    /// Sync Timing
+    #[id = "Sync Timing"]
+    pub sync_timing: EnumParam<BeatSync>,
 }
 
 impl Default for Gain {
@@ -114,6 +124,9 @@ impl Default for GainParams {
                 24,
                     IntRange::Linear {min: 1, max: 150 },
             ).with_unit(" Skip"),
+
+            // Sync timing parameter
+            sync_timing: EnumParam::new("Timing", BeatSync::Beat),
         }
     }
 }
@@ -225,8 +238,9 @@ impl Plugin for Gain {
                                 ui.add_space(4.0);
                                 let _swap_response = ui.checkbox(&mut ontop.lock(), "Swap").on_hover_text("Change the drawing order of waveforms");
 
-                                let sync_response = ui.checkbox(&mut sync_var.lock(), "Sync Beat").on_hover_text("Lock drawing to beat");
+                                let sync_response = ui.checkbox(&mut sync_var.lock(), "Sync").on_hover_text("Lock drawing to timing");
                                 let alt_sync = ui.checkbox(&mut alt_sync.lock(), "Alt. Sync").on_hover_text("Try this if Sync doesn't work");
+                                let timing = ui.add(widgets::ParamSlider::for_param(&params.sync_timing, setter).with_width(60.0));
 
                                 let dir_response = ui.checkbox(&mut dir_var.lock(), "Flip").on_hover_text("Flip direction of oscilloscope");
 
@@ -234,7 +248,7 @@ impl Plugin for Gain {
                                     sum_line = Line::new(PlotPoints::default());
                                 }
                                 // Reset our line on change
-                                if sync_response.clicked() || dir_response.clicked() || alt_sync.clicked()
+                                if sync_response.clicked() || dir_response.clicked() || alt_sync.clicked() || timing.changed()
                                 {
                                     sum_line = Line::new(PlotPoints::default());
                                     aux_line = Line::new(PlotPoints::default());

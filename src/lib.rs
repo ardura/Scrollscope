@@ -1,7 +1,7 @@
 use atomic_float::AtomicF32;
 use nih_plug::{prelude::*};
 use nih_plug_egui::{create_egui_editor, egui::{self, mutex::{Mutex}, plot::{Line, PlotPoints, HLine}, Color32, Stroke, Rect, Rounding}, widgets, EguiState};
-use std::{collections::VecDeque, sync::atomic::AtomicI32, ops::RangeInclusive};
+use std::{collections::VecDeque, ops::RangeInclusive};
 use std::{sync::{Arc, atomic::{Ordering}}};
 
 /**************************************************
@@ -42,8 +42,8 @@ pub struct Gain {
     // Syncing for beats
     sync_var: Arc<Mutex<bool>>,
     alt_sync: Arc<Mutex<bool>>,
-    alt_sync_beat: Arc<Mutex<i64>>,
-    in_place_index: Arc<AtomicI32>,
+    in_place_index: Arc<Mutex<i32>>,
+    threshold_combo: Arc<Mutex<i32>>,
 }
 
 #[derive(Params)]
@@ -85,8 +85,8 @@ impl Default for Gain {
             aux_samples: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             sync_var: Arc::new(Mutex::new(false)),
             alt_sync: Arc::new(Mutex::new(false)),
-            alt_sync_beat: Arc::new(Mutex::new(0)),
-            in_place_index: Arc::new(AtomicI32::new(0)),
+            in_place_index: Arc::new(Mutex::new(0)),
+            threshold_combo: Arc::new(Mutex::new(0)),
         }
     }
 }
@@ -394,33 +394,49 @@ impl Plugin for Gain {
             // Process main channel and sidechain together
             for (mut aux_channel_samples, mut channel_samples) in aux.inputs[0].iter_samples().zip(buffer.iter_samples()) {
                 for (aux_sample, sample) in aux_channel_samples.iter_mut().zip(channel_samples.iter_mut()) {
-                    
                     // If we are beat syncing - this resets our position in time accordingly
                     if *self.sync_var.lock() {
                         // Make the current bar precision a one thousandth of a beat - I couldn't find a better way to do this
                         let mut current_beat: f64 = context.transport().pos_beats().unwrap();
-
                         if *self.alt_sync.lock() {
-                            // This is scaled a little more to catch things earlier due to thread timing in Ardour
+                            // Jitter reduction in timeline dependent DAWs
+                            let start_pos = context.transport().bar_start_pos_beats().unwrap();
+                            if current_beat < start_pos {
+                                continue;
+                            }
                             // This should still play well with other DAWs using this timing
-                            current_beat = ((current_beat + 0.036) * 100.0 as f64).round() / 100.0 as f64;
-                            let current_bar = current_beat as i64;
-                            // Added in Issue #11
+                            current_beat = ((0.075 + current_beat) * 10000.0 as f64).ceil() / 10000.0 as f64;
+                            // I found this through trial and error w/ Ardour on Windows
+                            let threshold = 0.045759;
+                            // Added in Issue #11 Alternate timing for other DAWs
                             match self.params.sync_timing.value() {
                                 BeatSync::Bar => {
                                     // Tracks based off beat number for other daws - this is a mutex instead of atomic for locking
-                                    if *self.alt_sync_beat.lock() != current_bar && current_bar % 4 == 0 {
-                                        self.in_place_index = Arc::new(AtomicI32::new(0));
-                                        self.skip_counter = 0;
-                                        *self.alt_sync_beat.lock() = current_bar;
+                                    if current_beat % 4.0 <= threshold {
+                                        // If this is the first time we've been under our threshold, reset our drawing
+                                        if *self.threshold_combo.lock() == 0 {
+                                            // I'm wondering if this reassign was part of the jitter issue instead of being an update so I changed that too
+                                            *self.in_place_index.lock() = 0;
+                                            self.skip_counter = 0;
+                                        }
+                                        // Increment here so multiple threshold hits in a row don't stack
+                                        *self.threshold_combo.lock() += 1;
+                                    } else {
+                                        // We haven't met threshold, keep it 0
+                                        *self.threshold_combo.lock() = 0;
                                     }
                                 },
                                 BeatSync::Beat => {
                                     // Tracks based off beat number for other daws - this is a mutex instead of atomic for locking
-                                    if *self.alt_sync_beat.lock() != current_bar {
-                                        self.in_place_index = Arc::new(AtomicI32::new(0));
-                                        self.skip_counter = 0;
-                                        *self.alt_sync_beat.lock() = current_bar;
+                                    if current_beat % 1.0 <= threshold
+                                    {
+                                        if *self.threshold_combo.lock() == 0 {
+                                            *self.in_place_index.lock() = 0;
+                                            self.skip_counter = 0;
+                                        }
+                                        *self.threshold_combo.lock() += 1;
+                                    } else {
+                                        *self.threshold_combo.lock() = 0;
                                     }
                                 },
                             }
@@ -431,52 +447,46 @@ impl Plugin for Gain {
                                 BeatSync::Bar => {
                                     if current_beat % 4.0 == 0.0 {
                                         // Reset our index to the sample vecdeques
-                                        self.in_place_index = Arc::new(AtomicI32::new(0));
+                                        //self.in_place_index = Arc::new(Mutex::new(0));
+                                        *self.in_place_index.lock() = 0;
                                         self.skip_counter = 0;
                                     }
                                 },
                                 BeatSync::Beat => {
                                     if current_beat % 1.0 == 0.0 {
                                         // Reset our index to the sample vecdeques
-                                        self.in_place_index = Arc::new(AtomicI32::new(0));
+                                        //self.in_place_index = Arc::new(Mutex::new(0));
+                                        *self.in_place_index.lock() = 0;
                                         self.skip_counter = 0;
                                     }
                                 },
                             }
                         }
                     }
-
+                    
                     // Only grab X(skip_counter) samples to "optimize"
                     if self.skip_counter % self.params.h_scale.value() == 0 {
-                        
                         // Apply gain to main signal
                         let visual_main_sample: f32 = *sample * self.params.free_gain.smoothed.next();
                         // Apply gain to sidechain
                         let visual_aux_sample = *aux_sample * self.params.free_gain.smoothed.next();
-
                         // Set clipping flag if absolute gain over 1
                         if visual_aux_sample.abs() > 1.0 || visual_main_sample.abs() > 1.0 {
                             self.is_clipping.store(120.0, Ordering::Relaxed);
                         }
-
                         // Update our main samples vector for oscilloscope drawing
                         let mut guard: egui::mutex::MutexGuard<VecDeque<f32>> = self.samples.lock();
                         guard.make_contiguous();
-
                         // Update our sidechain samples vector for oscilloscope drawing
                         let mut aux_guard: egui::mutex::MutexGuard<VecDeque<f32>> = self.aux_samples.lock();
                         aux_guard.make_contiguous();
-
                         // If beat sync is on, we need to process changes in place
                         if *self.sync_var.lock() {
-                            // Access the Arc - ipi = in place index
-                            let ipi: Arc<AtomicI32> = self.in_place_index.clone();
-                            let ipi_index: usize = ipi.load(Ordering::Relaxed) as usize;
-                            
+                            // Access the in place index
+                            let ipi_index: usize = *self.in_place_index.lock() as usize;
                             // Check if our indexes exists
                             let main_element: Option<&f32> = guard.get(ipi_index);
                             let aux_element: Option<&f32> = aux_guard.get(ipi_index);
-
                             if main_element.is_some()
                             {
                                 // Modify our index since it exists (this compensates for scale/sample changes)
@@ -490,14 +500,14 @@ impl Plugin for Gain {
                                 *aux_index_value = visual_aux_sample;
                             }
                             // Increment our in_place_index now that we have substituted
-                            ipi.store((ipi_index + 1).try_into().unwrap(), Ordering::Relaxed);
+                            *self.in_place_index.lock() = ipi_index as i32 + 1;
+                            //ipi.store((ipi_index + 1).try_into().unwrap(), Ordering::Relaxed);
                         }
                         // Beat sync is off: allow "scroll"
                         else {
                             guard.push_front(visual_main_sample);
                             aux_guard.push_front(visual_aux_sample);
                         }
-
                         // ms = samples/samplerate so ms*samplerate = samples
                         // Limit the size of the vecdeques to X elements
                         let scroll: usize = (context.transport().sample_rate as usize/1000.0 as usize) * self.params.scrollspeed.value() as usize;

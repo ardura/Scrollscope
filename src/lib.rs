@@ -1107,8 +1107,8 @@ impl Plugin for Scrollscope {
                             aux_guard_5.resize(scroll, 0.0);
                         }
                     }
+                    self.skip_counter += 1;
                 }
-                self.skip_counter += 1;
             }
         }
         ProcessStatus::Normal

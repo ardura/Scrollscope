@@ -3,9 +3,7 @@
 Available as a VST3 and CLAP
 
 ## Example
-
-![image](https://github.com/ardura/Scrollscope/assets/31751444/5ffffda2-ebc8-47cc-8e46-dea81635e449)
-Orange is the kick, blue is the sidechain signal (click swap to put it behind the orange signal, and yellow is the sum!
+https://www.youtube.com/watch?v=klsogOHecyQ
 
 Note this can take a sidechain input! Do the routing in FL in plugin processing tab:
 ![image](https://github.com/ardura/Scrollscope/assets/31751444/6f7c6c75-afa0-47a4-8914-8d1c899ad572)

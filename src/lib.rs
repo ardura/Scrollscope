@@ -28,7 +28,7 @@ const YELLOW: Color32 = Color32::from_rgb(248, 255, 31);
 const LIME_GREEN: Color32 = Color32::from_rgb(50, 255, 40);
 const MAGENTA: Color32 = Color32::from_rgb(255, 0, 255);
 const ELECTRIC_BLUE: Color32 = Color32::from_rgb(0, 153, 255);
-const PURPLE: Color32 = Color32::from_rgb(140, 80, 184);
+const PURPLE: Color32 = Color32::from_rgb(230, 80, 80);
 const DARK: Color32 = Color32::from_rgb(40, 40, 40);
 
 #[derive(Enum, Clone, PartialEq)]

@@ -882,6 +882,7 @@ impl Plugin for Scrollscope {
 
             // Get iterators outside the loop
             // These are immutable to not break borrows and the .to_iter() things that return borrows
+            let raw_buffer = buffer.as_slice_immutable();
             let aux_0 = aux.inputs[0].as_slice_immutable();
             let aux_1 = aux.inputs[1].as_slice_immutable();
             let aux_2 = aux.inputs[2].as_slice_immutable();
@@ -889,7 +890,7 @@ impl Plugin for Scrollscope {
             let aux_4 = aux.inputs[4].as_slice_immutable();
 
             for (b0, ax0, ax1, ax2, ax3, ax4) in
-                izip!(buffer.iter_samples(), aux_0, aux_1, aux_2, aux_3, aux_4)
+                izip!(raw_buffer, aux_0, aux_1, aux_2, aux_3, aux_4)
             {
                 // Beat syncing control
                 if *self.sync_var.lock().unwrap() {
@@ -969,7 +970,7 @@ impl Plugin for Scrollscope {
                     aux_sample_4,
                     aux_sample_5,
                 ) in izip!(
-                    b0,
+                    b0.iter(),
                     ax0.iter(),
                     ax1.iter(),
                     ax2.iter(),

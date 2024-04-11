@@ -56,7 +56,7 @@ impl<'a> Widget for SlimCheckbox<'a> {
             /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
             //This is the only piece I changed -Ardura
             desired_size =
-                desired_size.at_least(vec2(spacing.interact_size.x * 0.5, spacing.interact_size.y));
+                desired_size.at_least(vec2(spacing.interact_size.x * 0.45, spacing.interact_size.y));
             /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
             (Some(text), desired_size)

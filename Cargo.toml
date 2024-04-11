@@ -1,6 +1,6 @@
 [package]
 name = "scrollscope"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2021"
 authors = ["Ardura <azviscarra@gmail.com>"]
 license = "GPL-3.0-or-later"
@@ -20,6 +20,7 @@ itertools = "0.12.1"
 # This is copied from Actuate, technically it could point to Robbert's Git too, doesn't matter
 nih_plug = { git = "https://github.com/ardura/nih-plug.git", rev = "e59dc33aaf0c06c834dba0821f6e269e6377f362", features = ["assert_process_allocs"] }
 nih_plug_egui = { git = "https://github.com/ardura/nih-plug.git", rev = "e59dc33aaf0c06c834dba0821f6e269e6377f362" }
+rustfft = "6.2.0"
 
 [profile.release]
 lto = "thin"

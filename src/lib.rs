@@ -575,8 +575,6 @@ impl Plugin for Scrollscope {
 
                         // Show the frequency analyzer
                         if *show_analyzer.lock().unwrap() {
-                            //let samples_vec = samples.clone();
-                            //let aux_1_samples_vec = aux_samples_1.clone();
                             let mut shapes = vec![];
 
                             // Compute our fast fourier transforms
@@ -645,7 +643,12 @@ impl Plugin for Scrollscope {
                             let db_scaler = 2.75;
                             let freq_scaler = 285.0;
                             let x_shift = -220.0;
-                            let y_shift = 200.0;
+                            let y_shift = 220.0;
+
+                            // 1Khz pivot and -4.5 slope is same as Fruity Parametric EQ2
+                            // For some reason 12 lines up the same here...
+                            let pivot = 1000.0;
+                            let slope = 12.0;
 
                            
                             // Primary Input
@@ -653,9 +656,10 @@ impl Plugin for Scrollscope {
                                 .iter()
                                 .zip(magnitudes.iter())
                                 .map(|(freq, magnitude)| {
+                                    let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                     pos2(
                                         freq.log10() * freq_scaler + x_shift,
-                                        (util::gain_to_db(*magnitude) * -1.0) * db_scaler + y_shift
+                                        (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                     )
                                 })
                                 .collect();
@@ -665,9 +669,10 @@ impl Plugin for Scrollscope {
                                 .iter()
                                 .zip(magnitudes_ax1.iter())
                                 .map(|(freq, magnitude)| {
+                                    let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                     pos2(
                                         freq.log10() * freq_scaler + x_shift,
-                                        (util::gain_to_db(*magnitude) * -1.0) * db_scaler + y_shift
+                                        (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                     )
                                 })
                                 .collect();
@@ -676,9 +681,10 @@ impl Plugin for Scrollscope {
                                 .iter()
                                 .zip(magnitudes_ax2.iter())
                                 .map(|(freq, magnitude)| {
+                                    let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                     pos2(
                                         freq.log10() * freq_scaler + x_shift,
-                                        (util::gain_to_db(*magnitude) * -1.0) * db_scaler + y_shift
+                                        (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                     )
                                 })
                                 .collect();
@@ -687,9 +693,10 @@ impl Plugin for Scrollscope {
                                 .iter()
                                 .zip(magnitudes_ax3.iter())
                                 .map(|(freq, magnitude)| {
+                                    let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                     pos2(
                                         freq.log10() * freq_scaler + x_shift,
-                                        (util::gain_to_db(*magnitude) * -1.0) * db_scaler + y_shift
+                                        (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                     )
                                 })
                                 .collect();
@@ -698,9 +705,10 @@ impl Plugin for Scrollscope {
                                 .iter()
                                 .zip(magnitudes_ax4.iter())
                                 .map(|(freq, magnitude)| {
+                                    let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                     pos2(
                                         freq.log10() * freq_scaler + x_shift,
-                                        (util::gain_to_db(*magnitude) * -1.0) * db_scaler + y_shift
+                                        (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                     )
                                 })
                                 .collect();
@@ -709,9 +717,10 @@ impl Plugin for Scrollscope {
                                 .iter()
                                 .zip(magnitudes_ax5.iter())
                                 .map(|(freq, magnitude)| {
+                                    let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                     pos2(
                                         freq.log10() * freq_scaler + x_shift,
-                                        (util::gain_to_db(*magnitude) * -1.0) * db_scaler + y_shift
+                                        (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                     )
                                 })
                                 .collect();
@@ -722,7 +731,10 @@ impl Plugin for Scrollscope {
                             for (num,scaled_num) in freqs.iter().zip(scaled_ref_freqs.iter()) {
                                 shapes.push(
                                     epaint::Shape::line_segment(
-                                        [Pos2::new(*scaled_num + x_shift, 515.0), Pos2::new(*scaled_num  + x_shift, 30.0)],
+                                        [
+                                            Pos2::new(*scaled_num + x_shift, 515.0),
+                                            Pos2::new(*scaled_num + x_shift, 30.0)
+                                        ],
                                         Stroke::new(0.5, Color32::GRAY)
                                     )
                                 );
@@ -740,7 +752,10 @@ impl Plugin for Scrollscope {
                             for scaled_num in scaled_sub_freqs.iter() {
                                 shapes.push(
                                     epaint::Shape::line_segment(
-                                        [Pos2::new(*scaled_num + x_shift, 515.0), Pos2::new(*scaled_num  + x_shift, 30.0)],
+                                        [
+                                            Pos2::new(*scaled_num + x_shift, 515.0),
+                                            Pos2::new(*scaled_num + x_shift, 30.0)
+                                        ],
                                         Stroke::new(0.5, Color32::DARK_GRAY)
                                     )
                                 );
@@ -1511,3 +1526,11 @@ impl Vst3Plugin for Scrollscope {
 
 nih_export_clap!(Scrollscope);
 nih_export_vst3!(Scrollscope);
+
+fn pivot_frequency_slope(freq: f32, magnitude: f32, f0: f32, slope: f32) -> f32{
+    if freq < f0 {
+        magnitude * (freq / f0).powf(slope / 20.0)
+    } else {
+        magnitude * (f0 / freq).powf(slope / 20.0)
+    }
+}

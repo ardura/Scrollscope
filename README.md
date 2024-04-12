@@ -1,6 +1,6 @@
 # Scrollscope by Ardura
 
-Available as a VST3 and CLAP
+Available as a VST3 and CLAP. This is an oscilloscope with a few different features I’ve wanted for myself. So I’m sharing that!
 
 ## Example
 [![Scrollscope Frequency Analyzer](https://markdown-videos-api.jorgenkh.no/url?url=https%3A%2F%2Fyoutu.be%2Fbsk1fAZlk-k)](https://youtu.be/bsk1fAZlk-k)
@@ -15,7 +15,7 @@ Note this can take a sidechain input! Do the routing in FL in plugin processing 
 VST3: Copy the vst3 file to C:\Program Files\Common Files\VST3
 CLAP: Copy the CLAP file to C:\Program Files\Common Files\CLAP
 
-This is an oscilloscope with a few different features I’ve wanted for myself. So I’m sharing that!
+I don't know the plugin install locations for linux or mac sorry
 
 ## Features
 - Sidechain input graphing - simply route sidechain input from another channel (up to 5)

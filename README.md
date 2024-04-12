@@ -19,7 +19,7 @@ I don't know the plugin install locations for linux or mac sorry
 
 ## Features
 - Sidechain input graphing - simply route sidechain input from another channel (up to 5)
-- Frequency analysis of multiple channels
+- Frequency analysis of multiple channels using Fast Fourier Transform and pivot frequency scaling
 - Scaling signals up and down with gain
 - Displaying large or small sample sizes
 - Optimization with skipping amount configurable

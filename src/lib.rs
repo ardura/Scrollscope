@@ -1,6 +1,7 @@
 use atomic_float::AtomicF32;
+use configparser::ini::Ini;
 use itertools::{izip};
-use nih_plug::prelude::*;
+use nih_plug::{prelude::*};
 use nih_plug_egui::{
     create_egui_editor,
     egui::{
@@ -9,26 +10,18 @@ use nih_plug_egui::{
     widgets, EguiState,
 };
 use rustfft::{num_complex::Complex, FftDirection, FftPlanner};
-use std::sync::{atomic::{AtomicI32, Ordering}, Arc};
+use std::{env, fs::File, io::Write, path::MAIN_SEPARATOR_STR, str::FromStr, sync::{atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering}, Arc}};
 use std::{collections::VecDeque, ops::RangeInclusive, sync::Mutex};
 
 mod slim_checkbox;
 
 /**************************************************
- * Scrollscope v1.3.0 by Ardura
+ * Scrollscope v1.3.1 by Ardura
+ * "A simple scrolling Oscilloscope has become complex now"
  *
  * Build with: cargo xtask bundle scrollscope --profile release
  * Debug with: cargo xtask bundle scrollscope --profile profiling
  * ************************************************/
-
-const ORANGE: Color32 = Color32::from_rgb(239, 123, 69);
-const CYAN: Color32 = Color32::from_rgb(14, 177, 210);
-const YELLOW: Color32 = Color32::from_rgb(248, 255, 31);
-const LIME_GREEN: Color32 = Color32::from_rgb(50, 255, 40);
-const MAGENTA: Color32 = Color32::from_rgb(255, 0, 255);
-const ELECTRIC_BLUE: Color32 = Color32::from_rgb(0, 153, 255);
-const PURPLE: Color32 = Color32::from_rgb(230, 80, 80);
-const DARK: Color32 = Color32::from_rgb(40, 40, 40);
 
 #[derive(Enum, Clone, PartialEq)]
 pub enum BeatSync {
@@ -41,16 +34,18 @@ pub struct Scrollscope {
 
     // Counter for scaling sample skipping
     skip_counter: i32,
-    focused_line_toggle: Arc<Mutex<u8>>,
+    focused_line_toggle: Arc<AtomicU8>,
     is_clipping: Arc<AtomicF32>,
-    direction: Arc<Mutex<bool>>,
-    enable_main: Arc<Mutex<bool>>,
-    enable_aux_1: Arc<Mutex<bool>>,
-    enable_aux_2: Arc<Mutex<bool>>,
-    enable_aux_3: Arc<Mutex<bool>>,
-    enable_aux_4: Arc<Mutex<bool>>,
-    enable_aux_5: Arc<Mutex<bool>>,
-    enable_sum: Arc<Mutex<bool>>,
+    direction: Arc<AtomicBool>,
+    enable_main: Arc<AtomicBool>,
+    enable_aux_1: Arc<AtomicBool>,
+    enable_aux_2: Arc<AtomicBool>,
+    enable_aux_3: Arc<AtomicBool>,
+    enable_aux_4: Arc<AtomicBool>,
+    enable_aux_5: Arc<AtomicBool>,
+    enable_sum: Arc<AtomicBool>,
+    enable_guidelines: Arc<AtomicBool>,
+    enable_bar_mode: Arc<AtomicBool>,
 
     // Data holding values
     samples: Arc<Mutex<VecDeque<f32>>>,
@@ -59,16 +54,18 @@ pub struct Scrollscope {
     aux_samples_3: Arc<Mutex<VecDeque<f32>>>,
     aux_samples_4: Arc<Mutex<VecDeque<f32>>>,
     aux_samples_5: Arc<Mutex<VecDeque<f32>>>,
+    scrolling_beat_lines: Arc<Mutex<VecDeque<f32>>>,
 
     // Syncing for beats
-    sync_var: Arc<Mutex<bool>>,
-    alt_sync: Arc<Mutex<bool>>,
-    in_place_index: Arc<Mutex<i32>>,
-    threshold_combo: Arc<Mutex<i32>>,
+    sync_var: Arc<AtomicBool>,
+    alt_sync: Arc<AtomicBool>,
+    in_place_index: Arc<AtomicI32>,
+    threshold_combo: Arc<AtomicI32>,
+    add_beat_line: Arc<AtomicBool>,
 
     // FFT/Analyzer
     fft: Arc<Mutex<FftPlanner<f32>>>,
-    show_analyzer: Arc<Mutex<bool>>,
+    show_analyzer: Arc<AtomicBool>,
 
     sample_rate: Arc<AtomicF32>,
     prev_skip: Arc<AtomicI32>,
@@ -102,28 +99,32 @@ impl Default for Scrollscope {
         Self {
             params: Arc::new(ScrollscopeParams::default()),
             skip_counter: 0,
-            focused_line_toggle: Arc::new(Mutex::new(0)),
-            direction: Arc::new(Mutex::new(false)),
+            focused_line_toggle: Arc::new(AtomicU8::new(0)),
+            direction: Arc::new(AtomicBool::new(false)),
             is_clipping: Arc::new(AtomicF32::new(0.0)),
-            enable_main: Arc::new(Mutex::new(true)),
-            enable_aux_1: Arc::new(Mutex::new(false)),
-            enable_aux_2: Arc::new(Mutex::new(false)),
-            enable_aux_3: Arc::new(Mutex::new(false)),
-            enable_aux_4: Arc::new(Mutex::new(false)),
-            enable_aux_5: Arc::new(Mutex::new(false)),
-            enable_sum: Arc::new(Mutex::new(true)),
+            enable_main: Arc::new(AtomicBool::new(true)),
+            enable_aux_1: Arc::new(AtomicBool::new(false)),
+            enable_aux_2: Arc::new(AtomicBool::new(false)),
+            enable_aux_3: Arc::new(AtomicBool::new(false)),
+            enable_aux_4: Arc::new(AtomicBool::new(false)),
+            enable_aux_5: Arc::new(AtomicBool::new(false)),
+            enable_sum: Arc::new(AtomicBool::new(true)),
+            enable_guidelines: Arc::new(AtomicBool::new(true)),
+            enable_bar_mode: Arc::new(AtomicBool::new(false)),
             samples: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             aux_samples_1: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             aux_samples_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             aux_samples_3: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             aux_samples_4: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             aux_samples_5: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
-            sync_var: Arc::new(Mutex::new(false)),
-            alt_sync: Arc::new(Mutex::new(false)),
-            in_place_index: Arc::new(Mutex::new(0)),
-            threshold_combo: Arc::new(Mutex::new(0)),
+            scrolling_beat_lines: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
+            sync_var: Arc::new(AtomicBool::new(false)),
+            alt_sync: Arc::new(AtomicBool::new(false)),
+            add_beat_line: Arc::new(AtomicBool::new(false)),
+            in_place_index: Arc::new(AtomicI32::new(0)),
+            threshold_combo: Arc::new(AtomicI32::new(0)),
             fft: Arc::new(Mutex::new(FftPlanner::new())),
-            show_analyzer: Arc::new(Mutex::new(false)),
+            show_analyzer: Arc::new(AtomicBool::new(false)),
             sample_rate: Arc::new(AtomicF32::new(44100.0)),
             prev_skip: Arc::new(AtomicI32::new(24)),
         }
@@ -199,7 +200,6 @@ impl Plugin for Scrollscope {
         self.params.clone()
     }
 
-    #[allow(unused_assignments)]
     fn editor(&self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let params = self.params.clone();
         let samples = self.samples.clone();
@@ -208,6 +208,7 @@ impl Plugin for Scrollscope {
         let aux_samples_3 = self.aux_samples_3.clone();
         let aux_samples_4 = self.aux_samples_4.clone();
         let aux_samples_5 = self.aux_samples_5.clone();
+        let scrolling_beat_lines = self.scrolling_beat_lines.clone();
         let ontop = self.focused_line_toggle.clone();
         let is_clipping = self.is_clipping.clone();
         let sync_var = self.sync_var.clone();
@@ -220,48 +221,177 @@ impl Plugin for Scrollscope {
         let en_aux4 = self.enable_aux_4.clone();
         let en_aux5 = self.enable_aux_5.clone();
         let en_sum = self.enable_sum.clone();
+        let en_guidelines = self.enable_guidelines.clone();
+        let en_bar_mode = self.enable_bar_mode.clone();
         let fft = self.fft.clone();
         let show_analyzer = self.show_analyzer.clone();
         let sample_rate = self.sample_rate.clone();
         let prev_skip = self.prev_skip.clone();
+        let mut config = Ini::new();
+        let binding = dirs::config_local_dir();
+        let location;
+        if binding.is_some() {
+            location = String::from(binding.unwrap().as_os_str().to_str().unwrap()) + MAIN_SEPARATOR_STR + "Scrollscope.ini";
+            let location_clone = location.clone();
+            let location_clone_2 = location.clone();
+            nih_log!("{}", location);
+            let mut _config_loaded = config.load(location);
+            if _config_loaded.is_ok() {
+                nih_log!("Loaded!");
+            } else {
+                nih_log!("Not found!");
+                let mut file = File::create(location_clone).unwrap();
+                // Create our default config file if we can
+                let write_result = file.write_all(b"# These are in RGB
+[ui_colors]
+background = 40,40,40
+guidelines = 160,160,160
+ui_main_color = 239,123,69
+user_main = 239,123,69
+user_aux_1 = 14,177,210
+user_aux_2 = 50,255,40
+user_aux_3 = 0,153,255
+user_aux_4 = 255,0,255
+user_aux_5 = 230,80,80
+user_sum_line = 248,255,31
+inactive_bg = 60,60,60");
+                if write_result.is_ok() {
+                    nih_log!("Created!");
+                    _config_loaded = config.load(location_clone_2);
+                } else {
+                    nih_log!("Coudldn't Create!");
+                }
+            }
+        }
+        
+        let mut t: Vec<u8> = config.get("ui_colors", "user_main")
+            .unwrap()
+            .split(',')
+            .map(|elem|{
+                let u: u8 = FromStr::from_str(elem).unwrap_or_default();
+                u
+            })
+            .collect();
+        let primary_line_color = Color32::from_rgb(t[0], t[1], t[2]);
+        t = config.get("ui_colors", "background")
+            .unwrap()
+            .split(',')
+            .map(|elem|{
+                let u: u8 = FromStr::from_str(elem).unwrap_or_default();
+                u
+            })
+            .collect();
+        let background_color = Color32::from_rgb(t[0], t[1], t[2]);
+        t = config.get("ui_colors", "guidelines")
+            .unwrap()
+            .split(',')
+            .map(|elem|{
+                let u: u8 = FromStr::from_str(elem).unwrap_or_default();
+                u
+            })
+            .collect();
+        let guidelines = Color32::from_rgb(t[0], t[1], t[2]);
+        t = config.get("ui_colors", "ui_main_color")
+            .unwrap()
+            .split(',')
+            .map(|elem|{
+                let u: u8 = FromStr::from_str(elem).unwrap_or_default();
+                u
+            })
+            .collect();
+        let ui_main_color = Color32::from_rgb(t[0], t[1], t[2]);
+        t = config.get("ui_colors", "user_sum_line")
+            .unwrap()
+            .split(',')
+            .map(|elem|{
+                let u: u8 = FromStr::from_str(elem).unwrap_or_default();
+                u
+            })
+            .collect();
+        let user_sum_line = Color32::from_rgb(t[0], t[1], t[2]);
+        t = config.get("ui_colors", "user_aux_1")
+            .unwrap()
+            .split(',')
+            .map(|elem|{
+                let u: u8 = FromStr::from_str(elem).unwrap_or_default();
+                u
+            })
+            .collect();
+        let user_aux_1 = Color32::from_rgb(t[0], t[1], t[2]);
+        t = config.get("ui_colors", "user_aux_2")
+            .unwrap()
+            .split(',')
+            .map(|elem|{
+                let u: u8 = FromStr::from_str(elem).unwrap_or_default();
+                u
+            })
+            .collect();
+        let user_aux_2 = Color32::from_rgb(t[0], t[1], t[2]);
+        t = config.get("ui_colors", "user_aux_3")
+            .unwrap()
+            .split(',')
+            .map(|elem|{
+                let u: u8 = FromStr::from_str(elem).unwrap_or_default();
+                u
+            })
+            .collect();
+        let user_aux_3 = Color32::from_rgb(t[0], t[1], t[2]);
+        t = config.get("ui_colors", "user_aux_4")
+            .unwrap()
+            .split(',')
+            .map(|elem|{
+                let u: u8 = FromStr::from_str(elem).unwrap_or_default();
+                u
+            })
+            .collect();
+        let user_aux_4 = Color32::from_rgb(t[0], t[1], t[2]);
+        t = config.get("ui_colors", "user_aux_5")
+            .unwrap()
+            .split(',')
+            .map(|elem|{
+                let u: u8 = FromStr::from_str(elem).unwrap_or_default();
+                u
+            })
+            .collect();
+        let user_aux_5 = Color32::from_rgb(t[0], t[1], t[2]);
+        t = config.get("ui_colors", "inactive_bg")
+            .unwrap()
+            .split(',')
+            .map(|elem|{
+                let u: u8 = FromStr::from_str(elem).unwrap_or_default();
+                u
+            })
+            .collect();
+        let inactive_bg = Color32::from_rgb(t[0], t[1], t[2]);
+        
         create_egui_editor(
             self.params.editor_state.clone(),
             (),
             |_, _| {},
             move |egui_ctx, setter, _state| {
                 egui::CentralPanel::default().show(egui_ctx, |ui| {
-                    // Default colors
-                    let mut primary_line_color = ORANGE;
-                    let mut aux_line_color = CYAN;
-                    let mut aux_line_color_2 = LIME_GREEN;
-                    let mut aux_line_color_3 = ELECTRIC_BLUE;
-                    let mut aux_line_color_4 = MAGENTA;
-                    let mut aux_line_color_5 = PURPLE;
-                    let sum_line_color = YELLOW;
-                    let background_color = DARK;
-
                     // Change colors - there's probably a better way to do this
-                    let mut style_var = ui.style_mut().clone();
-                    style_var.visuals.widgets.inactive.bg_fill = Color32::from_rgb(60, 60, 60);
+                    let style_var = ui.style_mut();
+                    style_var.visuals.widgets.inactive.bg_fill = inactive_bg;
 
                     // Assign default colors if user colors not set
-                    style_var.visuals.widgets.inactive.fg_stroke.color = primary_line_color;
+                    style_var.visuals.widgets.inactive.fg_stroke.color = ui_main_color;
                     style_var.visuals.widgets.noninteractive.fg_stroke.color = primary_line_color;
                     style_var.visuals.widgets.inactive.bg_stroke.color = primary_line_color;
-                    style_var.visuals.widgets.active.fg_stroke.color = primary_line_color;
+                    style_var.visuals.widgets.active.fg_stroke.color = ui_main_color;
                     style_var.visuals.widgets.active.bg_stroke.color = primary_line_color;
                     style_var.visuals.widgets.open.fg_stroke.color = primary_line_color;
                     // Param fill
                     style_var.visuals.selection.bg_fill = primary_line_color;
 
-                    style_var.visuals.widgets.noninteractive.bg_stroke.color = aux_line_color;
+                    style_var.visuals.widgets.noninteractive.bg_stroke.color = guidelines;
                     style_var.visuals.widgets.noninteractive.bg_fill = background_color;
 
                     // Trying to draw background as rect
                     ui.painter()
                         .rect_filled(Rect::EVERYTHING, Rounding::none(), background_color);
 
-                    ui.set_style(style_var);
+                    //ui.set_style(style_var);
 
                     // Reset these to be assigned/reassigned when params change
                     let mut sum_line: Line = Line::new(PlotPoints::default());
@@ -270,6 +400,7 @@ impl Plugin for Scrollscope {
                     let mut aux_line_3: Line = Line::new(PlotPoints::default());
                     let mut aux_line_4: Line = Line::new(PlotPoints::default());
                     let mut aux_line_5: Line = Line::new(PlotPoints::default());
+                    let mut scrolling_beat_line: Line = Line::new(PlotPoints::default());
                     let mut line: Line = Line::new(PlotPoints::default());
                     let mut samples = samples.lock().unwrap();
                     let mut aux_samples_1 = aux_samples_1.lock().unwrap();
@@ -277,6 +408,7 @@ impl Plugin for Scrollscope {
                     let mut aux_samples_3 = aux_samples_3.lock().unwrap();
                     let mut aux_samples_4 = aux_samples_4.lock().unwrap();
                     let mut aux_samples_5 = aux_samples_5.lock().unwrap();
+                    let mut scrolling_beat_lines = scrolling_beat_lines.lock().unwrap();
                     let sr = sample_rate.clone();
 
                     // The entire "window" container
@@ -292,7 +424,7 @@ impl Plugin for Scrollscope {
                             ui.add_space(4.0);
 
                             let swap_response: Response;
-                            if *show_analyzer.lock().unwrap() {
+                            if show_analyzer.load(Ordering::SeqCst) {
                                 let _scroll_handle = ui.add(
                                     widgets::ParamSlider::for_param(&params.scrollspeed, setter)
                                         .with_width(120.0),
@@ -320,12 +452,11 @@ impl Plugin for Scrollscope {
                                     .button("Toggle Focus")
                                     .on_hover_text("Change the drawing order of waveforms");
 
-                                let sync_response = ui
-                                    .checkbox(&mut sync_var.lock().unwrap(), "Sync")
-                                    .on_hover_text("Lock drawing to timing");
-                                let alt_sync_response = ui
-                                    .checkbox(&mut alt_sync.lock().unwrap(), "Alt Sync")
-                                    .on_hover_text("Try this if Sync doesn't work");
+                                let sync_box = slim_checkbox::AtomicSlimCheckbox::new(&sync_var, "Sync");
+                                let sync_response = ui.add(sync_box).on_hover_text("Lock drawing to timing");
+                                let alt_sync_box = slim_checkbox::AtomicSlimCheckbox::new(&alt_sync, "Alt Sync");
+                                let alt_sync_response = ui.add(alt_sync_box).on_hover_text("Try this if Sync doesn't work");
+
                                 let timing_response = ui
                                     .add(
                                         widgets::ParamSlider::for_param(&params.sync_timing, setter)
@@ -333,9 +464,8 @@ impl Plugin for Scrollscope {
                                     )
                                     .on_hover_text("Refresh interval when sync enabled");
 
-                                let dir_response = ui
-                                    .checkbox(&mut dir_var.lock().unwrap(), "Flip")
-                                    .on_hover_text("Flip direction of oscilloscope");
+                                let dir_box = slim_checkbox::AtomicSlimCheckbox::new(&dir_var, "Flip");
+                                let dir_response = ui.add(dir_box).on_hover_text("Flip direction of oscilloscope");
 
                                 // Reset our line on change
                             if sync_response.clicked()
@@ -346,12 +476,12 @@ impl Plugin for Scrollscope {
                             // Keep same direction when syncing (Issue #12)
                             if sync_response.clicked() {
                                 // If flip selected already, it should be deselected on this click
-                                if *dir_var.lock().unwrap() {
-                                    *dir_var.lock().unwrap() = false;
+                                if dir_var.load(Ordering::SeqCst) {
+                                    dir_var.store(false, Ordering::SeqCst);
                                 }
                                 // If flip not selected, it should now be selected
                                 else {
-                                    *dir_var.lock().unwrap() = true;
+                                    dir_var.store(true, Ordering::SeqCst);
                                 }
                             }
                             sum_line = Line::new(PlotPoints::default());
@@ -360,6 +490,7 @@ impl Plugin for Scrollscope {
                             aux_line_3 = Line::new(PlotPoints::default());
                             aux_line_4 = Line::new(PlotPoints::default());
                             aux_line_5 = Line::new(PlotPoints::default());
+                            scrolling_beat_line = Line::new(PlotPoints::default());
                             line = Line::new(PlotPoints::default());
                             samples.clear();
                             aux_samples_1.clear();
@@ -367,89 +498,90 @@ impl Plugin for Scrollscope {
                             aux_samples_3.clear();
                             aux_samples_4.clear();
                             aux_samples_5.clear();
+                            scrolling_beat_lines.clear();
                         }
                             }
 
                             if swap_response.clicked() {
-                                let mut num = ontop.lock().unwrap();
+                                let num = ontop.load(Ordering::SeqCst);
                                 // This skips possible "OFF" lines when toggling
-                                match *num {
+                                match num {
                                     0 => {
-                                        if *en_aux1.lock().unwrap() {
-                                            *num = 1;
-                                        } else if *en_aux2.lock().unwrap() {
-                                            *num = 2;
-                                        } else if *en_aux3.lock().unwrap() {
-                                            *num = 3;
-                                        } else if *en_aux4.lock().unwrap() {
-                                            *num = 4;
-                                        } else if *en_aux5.lock().unwrap() {
-                                            *num = 5;
+                                        if en_aux1.load(Ordering::SeqCst) {
+                                            ontop.store(1, Ordering::SeqCst);
+                                        } else if en_aux2.load(Ordering::SeqCst) {
+                                            ontop.store(2, Ordering::SeqCst);
+                                        } else if en_aux3.load(Ordering::SeqCst) {
+                                            ontop.store(3, Ordering::SeqCst);
+                                        } else if en_aux4.load(Ordering::SeqCst) {
+                                            ontop.store(4, Ordering::SeqCst);
+                                        } else if en_aux5.load(Ordering::SeqCst) {
+                                            ontop.store(5, Ordering::SeqCst);
                                         }
                                     }
                                     1 => {
-                                        if *en_aux2.lock().unwrap() {
-                                            *num = 2;
-                                        } else if *en_aux3.lock().unwrap() {
-                                            *num = 3;
-                                        } else if *en_aux4.lock().unwrap() {
-                                            *num = 4;
-                                        } else if *en_aux5.lock().unwrap() {
-                                            *num = 5;
-                                        } else if *en_main.lock().unwrap() {
-                                            *num = 0;
+                                        if en_aux2.load(Ordering::SeqCst) {
+                                            ontop.store(2, Ordering::SeqCst);
+                                        } else if en_aux3.load(Ordering::SeqCst) {
+                                            ontop.store(3, Ordering::SeqCst);
+                                        } else if en_aux4.load(Ordering::SeqCst) {
+                                            ontop.store(4, Ordering::SeqCst);
+                                        } else if en_aux5.load(Ordering::SeqCst) {
+                                            ontop.store(5, Ordering::SeqCst);
+                                        } else if en_main.load(Ordering::SeqCst) {
+                                            ontop.store(0, Ordering::SeqCst);
                                         }
                                     }
                                     2 => {
-                                        if *en_aux3.lock().unwrap() {
-                                            *num = 3;
-                                        } else if *en_aux4.lock().unwrap() {
-                                            *num = 4;
-                                        } else if *en_aux5.lock().unwrap() {
-                                            *num = 5;
-                                        } else if *en_main.lock().unwrap() {
-                                            *num = 0;
-                                        } else if *en_aux1.lock().unwrap() {
-                                            *num = 1;
+                                        if en_aux3.load(Ordering::SeqCst) {
+                                            ontop.store(3, Ordering::SeqCst);
+                                        } else if en_aux4.load(Ordering::SeqCst) {
+                                            ontop.store(4, Ordering::SeqCst);
+                                        } else if en_aux5.load(Ordering::SeqCst) {
+                                            ontop.store(5, Ordering::SeqCst);
+                                        } else if en_main.load(Ordering::SeqCst) {
+                                            ontop.store(0, Ordering::SeqCst);
+                                        } else if en_aux1.load(Ordering::SeqCst) {
+                                            ontop.store(1, Ordering::SeqCst);
                                         }
                                     }
                                     3 => {
-                                        if *en_aux4.lock().unwrap() {
-                                            *num = 4;
-                                        } else if *en_aux5.lock().unwrap() {
-                                            *num = 5;
-                                        } else if *en_main.lock().unwrap() {
-                                            *num = 0;
-                                        } else if *en_aux1.lock().unwrap() {
-                                            *num = 1;
-                                        } else if *en_aux2.lock().unwrap() {
-                                            *num = 2;
+                                        if en_aux4.load(Ordering::SeqCst) {
+                                            ontop.store(4, Ordering::SeqCst);
+                                        } else if en_aux5.load(Ordering::SeqCst) {
+                                            ontop.store(5, Ordering::SeqCst);
+                                        } else if en_main.load(Ordering::SeqCst) {
+                                            ontop.store(0, Ordering::SeqCst);
+                                        } else if en_aux1.load(Ordering::SeqCst) {
+                                            ontop.store(1, Ordering::SeqCst);
+                                        } else if en_aux2.load(Ordering::SeqCst) {
+                                            ontop.store(2, Ordering::SeqCst);
                                         }
                                     }
                                     4 => {
-                                        if *en_aux5.lock().unwrap() {
-                                            *num = 5;
-                                        } else if *en_main.lock().unwrap() {
-                                            *num = 0;
-                                        } else if *en_aux1.lock().unwrap() {
-                                            *num = 1;
-                                        } else if *en_aux2.lock().unwrap() {
-                                            *num = 2;
-                                        } else if *en_aux3.lock().unwrap() {
-                                            *num = 3;
+                                        if en_aux5.load(Ordering::SeqCst) {
+                                            ontop.store(5, Ordering::SeqCst);
+                                        } else if en_main.load(Ordering::SeqCst) {
+                                            ontop.store(0, Ordering::SeqCst);
+                                        } else if en_aux1.load(Ordering::SeqCst) {
+                                            ontop.store(1, Ordering::SeqCst);
+                                        } else if en_aux2.load(Ordering::SeqCst) {
+                                            ontop.store(2, Ordering::SeqCst);
+                                        } else if en_aux3.load(Ordering::SeqCst) {
+                                            ontop.store(3, Ordering::SeqCst);
                                         }
                                     }
                                     5 => {
-                                        if *en_main.lock().unwrap() {
-                                            *num = 0;
-                                        } else if *en_aux1.lock().unwrap() {
-                                            *num = 1;
-                                        } else if *en_aux2.lock().unwrap() {
-                                            *num = 2;
-                                        } else if *en_aux3.lock().unwrap() {
-                                            *num = 3;
-                                        } else if *en_aux4.lock().unwrap() {
-                                            *num = 4;
+                                        if en_main.load(Ordering::SeqCst) {
+                                            ontop.store(0, Ordering::SeqCst);
+                                        } else if en_aux1.load(Ordering::SeqCst) {
+                                            ontop.store(1, Ordering::SeqCst);
+                                        } else if en_aux2.load(Ordering::SeqCst) {
+                                            ontop.store(2, Ordering::SeqCst);
+                                        } else if en_aux3.load(Ordering::SeqCst) {
+                                            ontop.store(3, Ordering::SeqCst);
+                                        } else if en_aux4.load(Ordering::SeqCst) {
+                                            ontop.store(4, Ordering::SeqCst);
                                         }
                                     }
                                     _ => {
@@ -458,43 +590,53 @@ impl Plugin for Scrollscope {
                                 }
                             }
 
-                            ui.add(slim_checkbox::SlimCheckbox::new(
-                                &mut en_main.lock().unwrap(),
+                            ui.add(slim_checkbox::AtomicSlimCheckbox::new(
+                                &en_main,
                                 "In",
                             ));
-                            ui.add(slim_checkbox::SlimCheckbox::new(
-                                &mut en_aux1.lock().unwrap(),
+                            ui.add(slim_checkbox::AtomicSlimCheckbox::new(
+                                &en_aux1,
                                 "2",
                             ));
-                            ui.add(slim_checkbox::SlimCheckbox::new(
-                                &mut en_aux2.lock().unwrap(),
+                            ui.add(slim_checkbox::AtomicSlimCheckbox::new(
+                                &en_aux2,
                                 "3",
                             ));
-                            ui.add(slim_checkbox::SlimCheckbox::new(
-                                &mut en_aux3.lock().unwrap(),
+                            ui.add(slim_checkbox::AtomicSlimCheckbox::new(
+                                &en_aux3,
                                 "4",
                             ));
-                            ui.add(slim_checkbox::SlimCheckbox::new(
-                                &mut en_aux4.lock().unwrap(),
+                            ui.add(slim_checkbox::AtomicSlimCheckbox::new(
+                                &en_aux4,
                                 "5",
                             ));
-                            ui.add(slim_checkbox::SlimCheckbox::new(
-                                &mut en_aux5.lock().unwrap(),
+                            ui.add(slim_checkbox::AtomicSlimCheckbox::new(
+                                &en_aux5,
                                 "6",
                             ));
-                            if !*show_analyzer.lock().unwrap() {
-                                ui.add(slim_checkbox::SlimCheckbox::new(
-                                    &mut en_sum.lock().unwrap(),
+                            if !show_analyzer.load(Ordering::SeqCst) {
+                                ui.add(slim_checkbox::AtomicSlimCheckbox::new(
+                                    &en_sum,
                                     "Sum",
                                 ));
                             }
-                            let analyzer_toggle = ui.add(slim_checkbox::SlimCheckbox::new(
-                                &mut show_analyzer.lock().unwrap(),
+                            let analyzer_toggle = ui.add(slim_checkbox::AtomicSlimCheckbox::new(
+                                &show_analyzer,
                                 "Analyze",
                             ));
+                            if show_analyzer.load(Ordering::SeqCst) {
+                                ui.add(slim_checkbox::AtomicSlimCheckbox::new(
+                                    &en_guidelines,
+                                    "Guidelines",
+                                ));
+                                ui.add(slim_checkbox::AtomicSlimCheckbox::new(
+                                    &en_bar_mode,
+                                    "Bar Mode",
+                                ));
+                            }
                             if analyzer_toggle.clicked() {
                                 // This is a ! because we'll always be behind the param toggle in time
-                                if !*show_analyzer.lock().unwrap() {
+                                if !show_analyzer.load(Ordering::SeqCst) {
                                     setter.set_parameter(&params.h_scale, prev_skip.load(Ordering::Relaxed));
                                 } else {
                                     prev_skip.store(params.h_scale.value(), Ordering::Relaxed);
@@ -507,66 +649,80 @@ impl Plugin for Scrollscope {
                     });
 
                     // Reverse our order for drawing if desired (I know this is "slow")
-                    if *dir_var.lock().unwrap() {
+                    if dir_var.load(Ordering::SeqCst) {
                         samples.make_contiguous().reverse();
                         aux_samples_1.make_contiguous().reverse();
                         aux_samples_2.make_contiguous().reverse();
                         aux_samples_3.make_contiguous().reverse();
                         aux_samples_4.make_contiguous().reverse();
                         aux_samples_5.make_contiguous().reverse();
+                        scrolling_beat_lines.make_contiguous().reverse();
                     }
+
+                    let mut final_primary_color: Color32 = Default::default();
+                    let mut final_aux_line_color: Color32 = Default::default();
+                    let mut final_aux_line_color_2: Color32 = Default::default();
+                    let mut final_aux_line_color_3: Color32 = Default::default();
+                    let mut final_aux_line_color_4: Color32 = Default::default();
+                    let mut final_aux_line_color_5: Color32 = Default::default();
 
                     ui.allocate_ui(egui::Vec2::new(900.0, 380.0), |ui| {
                         // Fix our colors to focus on our line
                         let lmult: f32 = 0.25;
-                        match *ontop.lock().unwrap() {
+                        match ontop.load(Ordering::SeqCst) {
                             0 => {
                                 // Main unaffected
-                                aux_line_color = aux_line_color.linear_multiply(lmult);
-                                aux_line_color_2 = aux_line_color_2.linear_multiply(lmult);
-                                aux_line_color_3 = aux_line_color_3.linear_multiply(lmult);
-                                aux_line_color_4 = aux_line_color_4.linear_multiply(lmult);
-                                aux_line_color_5 = aux_line_color_5.linear_multiply(lmult);
+                                final_primary_color = primary_line_color;
+                                final_aux_line_color = user_aux_1.linear_multiply(lmult);
+                                final_aux_line_color_2 = user_aux_2.linear_multiply(lmult);
+                                final_aux_line_color_3 = user_aux_3.linear_multiply(lmult);
+                                final_aux_line_color_4 = user_aux_4.linear_multiply(lmult);
+                                final_aux_line_color_5 = user_aux_5.linear_multiply(lmult);
                             }
                             1 => {
                                 // Aux unaffected
-                                primary_line_color = primary_line_color.linear_multiply(lmult);
-                                aux_line_color_2 = aux_line_color_2.linear_multiply(lmult);
-                                aux_line_color_3 = aux_line_color_3.linear_multiply(lmult);
-                                aux_line_color_4 = aux_line_color_4.linear_multiply(lmult);
-                                aux_line_color_5 = aux_line_color_5.linear_multiply(lmult);
+                                final_primary_color = primary_line_color.linear_multiply(lmult);
+                                final_aux_line_color = user_aux_1;
+                                final_aux_line_color_2 = user_aux_2.linear_multiply(lmult);
+                                final_aux_line_color_3 = user_aux_3.linear_multiply(lmult);
+                                final_aux_line_color_4 = user_aux_4.linear_multiply(lmult);
+                                final_aux_line_color_5 = user_aux_5.linear_multiply(lmult);
                             }
                             2 => {
                                 // Aux 2 unaffected
-                                primary_line_color = primary_line_color.linear_multiply(lmult);
-                                aux_line_color = aux_line_color.linear_multiply(lmult);
-                                aux_line_color_3 = aux_line_color_3.linear_multiply(lmult);
-                                aux_line_color_4 = aux_line_color_4.linear_multiply(lmult);
-                                aux_line_color_5 = aux_line_color_5.linear_multiply(lmult);
+                                final_primary_color = primary_line_color.linear_multiply(lmult);
+                                final_aux_line_color = user_aux_1.linear_multiply(lmult);
+                                final_aux_line_color_2 = user_aux_2;
+                                final_aux_line_color_3 = user_aux_3.linear_multiply(lmult);
+                                final_aux_line_color_4 = user_aux_4.linear_multiply(lmult);
+                                final_aux_line_color_5 = user_aux_5.linear_multiply(lmult);
                             }
                             3 => {
                                 // Aux 3 unaffected
-                                primary_line_color = primary_line_color.linear_multiply(lmult);
-                                aux_line_color = aux_line_color.linear_multiply(lmult);
-                                aux_line_color_2 = aux_line_color_2.linear_multiply(lmult);
-                                aux_line_color_4 = aux_line_color_4.linear_multiply(lmult);
-                                aux_line_color_5 = aux_line_color_5.linear_multiply(lmult);
+                                final_primary_color = primary_line_color.linear_multiply(lmult);
+                                final_aux_line_color = user_aux_1.linear_multiply(lmult);
+                                final_aux_line_color_2 = user_aux_2.linear_multiply(lmult);
+                                final_aux_line_color_3 = user_aux_3;
+                                final_aux_line_color_4 = user_aux_4.linear_multiply(lmult);
+                                final_aux_line_color_5 = user_aux_5.linear_multiply(lmult);
                             }
                             4 => {
                                 // Aux 4 unaffected
-                                primary_line_color = primary_line_color.linear_multiply(lmult);
-                                aux_line_color = aux_line_color.linear_multiply(lmult);
-                                aux_line_color_2 = aux_line_color_2.linear_multiply(lmult);
-                                aux_line_color_3 = aux_line_color_3.linear_multiply(lmult);
-                                aux_line_color_5 = aux_line_color_5.linear_multiply(lmult);
+                                final_primary_color = primary_line_color.linear_multiply(lmult);
+                                final_aux_line_color = user_aux_1.linear_multiply(lmult);
+                                final_aux_line_color_2 = user_aux_2.linear_multiply(lmult);
+                                final_aux_line_color_3 = user_aux_3.linear_multiply(lmult);
+                                final_aux_line_color_4 = user_aux_4;
+                                final_aux_line_color_5 = user_aux_5.linear_multiply(lmult);
                             }
                             5 => {
                                 // Aux 5 unaffected
-                                primary_line_color = primary_line_color.linear_multiply(lmult);
-                                aux_line_color = aux_line_color.linear_multiply(lmult);
-                                aux_line_color_2 = aux_line_color_2.linear_multiply(lmult);
-                                aux_line_color_3 = aux_line_color_3.linear_multiply(lmult);
-                                aux_line_color_4 = aux_line_color_4.linear_multiply(lmult);
+                                final_primary_color = primary_line_color.linear_multiply(lmult);
+                                final_aux_line_color = user_aux_1.linear_multiply(lmult);
+                                final_aux_line_color_2 = user_aux_2.linear_multiply(lmult);
+                                final_aux_line_color_3 = user_aux_3.linear_multiply(lmult);
+                                final_aux_line_color_4 = user_aux_4.linear_multiply(lmult);
+                                final_aux_line_color_5 = user_aux_5;
                             }
                             _ => {
                                 // We shouldn't be here
@@ -574,7 +730,7 @@ impl Plugin for Scrollscope {
                         }
 
                         // Show the frequency analyzer
-                        if *show_analyzer.lock().unwrap() {
+                        if show_analyzer.load(Ordering::SeqCst) {
                             let mut shapes = vec![];
 
                             // Compute our fast fourier transforms
@@ -613,212 +769,885 @@ impl Plugin for Scrollscope {
                             let frequencies: Vec<f32> = (0..buffer_len / 2)
                                 .map(|i| i as f32 * sr.load(Ordering::Relaxed) / buffer_len as f32)
                                 .collect();
-
                             let magnitudes_ax1: Vec<f32> = ax1.iter().map(|c| c.norm() as f32).collect();
                             let frequencies_ax1: Vec<f32> = (0..ax1_len / 2)
                                 .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax1_len as f32)
                                 .collect();
-
                             let magnitudes_ax2: Vec<f32> = ax2.iter().map(|c| c.norm() as f32).collect();
                             let frequencies_ax2: Vec<f32> = (0..ax2_len / 2)
                                 .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax2_len as f32)
                                 .collect();
-
                             let magnitudes_ax3: Vec<f32> = ax3.iter().map(|c| c.norm() as f32).collect();
                             let frequencies_ax3: Vec<f32> = (0..ax3_len / 2)
                                 .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax3_len as f32)
                                 .collect();
-
                             let magnitudes_ax4: Vec<f32> = ax4.iter().map(|c| c.norm() as f32).collect();
                             let frequencies_ax4: Vec<f32> = (0..ax4_len / 2)
                                 .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax4_len as f32)
                                 .collect();
-
                             let magnitudes_ax5: Vec<f32> = ax5.iter().map(|c| c.norm() as f32).collect();
                             let frequencies_ax5: Vec<f32> = (0..ax5_len / 2)
                                 .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax5_len as f32)
                                 .collect();
-
                             // Scale for visibility
                             let db_scaler = 2.75;
                             let freq_scaler = 285.0;
                             let x_shift = -220.0;
                             let y_shift = 220.0;
-
                             // 1Khz pivot and -4.5 slope is same as Fruity Parametric EQ2
                             // For some reason 12 lines up the same here...
                             let pivot = 1000.0;
                             let slope = 12.0;
 
-                           
-                            // Primary Input
-                            let data: Vec<Pos2> = frequencies
-                                .iter()
-                                .zip(magnitudes.iter())
-                                .map(|(freq, magnitude)| {
-                                    let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
-                                    pos2(
-                                        freq.log10() * freq_scaler + x_shift,
-                                        (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
-                                    )
-                                })
-                                .collect();
+                            if en_bar_mode.load(Ordering::SeqCst) {
+                                let length = frequencies.len();
+                                let bar_scaler = 300.0;
+                                let bars: f32 = 32.0;
+                                let chunk_size = length as f32 / bars;
+                                let mut chunked_f: Vec<f32> = Vec::with_capacity(bars as usize);
+                                let mut chunked_m: Vec<f32> = Vec::with_capacity(bars as usize);
+                                let mut chunked_f_ax1: Vec<f32> = Vec::with_capacity(bars as usize);
+                                let mut chunked_m_ax1: Vec<f32> = Vec::with_capacity(bars as usize);
+                                let mut chunked_f_ax2: Vec<f32> = Vec::with_capacity(bars as usize);
+                                let mut chunked_m_ax2: Vec<f32> = Vec::with_capacity(bars as usize);
+                                let mut chunked_f_ax3: Vec<f32> = Vec::with_capacity(bars as usize);
+                                let mut chunked_m_ax3: Vec<f32> = Vec::with_capacity(bars as usize);
+                                let mut chunked_f_ax4: Vec<f32> = Vec::with_capacity(bars as usize);
+                                let mut chunked_m_ax4: Vec<f32> = Vec::with_capacity(bars as usize);
+                                let mut chunked_f_ax5: Vec<f32> = Vec::with_capacity(bars as usize);
+                                let mut chunked_m_ax5: Vec<f32> = Vec::with_capacity(bars as usize);
+                                for i in 0..bars as i32 {
+                                    let start = (i as f32 * chunk_size) as usize;
+                                    let end = if i == bars as i32 - 1 {
+                                        length
+                                    } else {
+                                        ((i + 1) as f32 * chunk_size) as usize
+                                    };
 
-                            // Aux
-                            let ax1_data: Vec<Pos2> = frequencies_ax1
-                                .iter()
-                                .zip(magnitudes_ax1.iter())
-                                .map(|(freq, magnitude)| {
-                                    let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
-                                    pos2(
-                                        freq.log10() * freq_scaler + x_shift,
-                                        (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
-                                    )
-                                })
-                                .collect();
+                                    let sum_f: f32 = frequencies[start..end].iter().sum();
+                                    let average_f = sum_f / ((end - start) as f32);
+                                    let sum_m: f32 = magnitudes[start..end].iter().sum();
+                                    let average_m = sum_m / ((end - start) as f32);
+                                    chunked_f.push(average_f);
+                                    chunked_m.push(average_m);
 
-                            let ax2_data: Vec<Pos2> = frequencies_ax2
-                                .iter()
-                                .zip(magnitudes_ax2.iter())
-                                .map(|(freq, magnitude)| {
-                                    let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
-                                    pos2(
-                                        freq.log10() * freq_scaler + x_shift,
-                                        (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
-                                    )
-                                })
-                                .collect();
+                                    let sum_f_ax1: f32 = frequencies_ax1[start..end].iter().sum();
+                                    let average_f_ax1 = sum_f_ax1 / ((end - start) as f32);
+                                    let sum_m_ax1: f32 = magnitudes_ax1[start..end].iter().sum();
+                                    let average_m_ax1 = sum_m_ax1 / ((end - start) as f32);
+                                    chunked_f_ax1.push(average_f_ax1);
+                                    chunked_m_ax1.push(average_m_ax1);
 
-                            let ax3_data: Vec<Pos2> = frequencies_ax3
-                                .iter()
-                                .zip(magnitudes_ax3.iter())
-                                .map(|(freq, magnitude)| {
-                                    let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
-                                    pos2(
-                                        freq.log10() * freq_scaler + x_shift,
-                                        (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
-                                    )
-                                })
-                                .collect();
+                                    let sum_f_ax2: f32 = frequencies_ax2[start..end].iter().sum();
+                                    let average_f_ax2 = sum_f_ax2 / ((end - start) as f32);
+                                    let sum_m_ax2: f32 = magnitudes_ax2[start..end].iter().sum();
+                                    let average_m_ax2 = sum_m_ax2 / ((end - start) as f32);
+                                    chunked_f_ax2.push(average_f_ax2);
+                                    chunked_m_ax2.push(average_m_ax2);
 
-                            let ax4_data: Vec<Pos2> = frequencies_ax4
-                                .iter()
-                                .zip(magnitudes_ax4.iter())
-                                .map(|(freq, magnitude)| {
-                                    let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
-                                    pos2(
-                                        freq.log10() * freq_scaler + x_shift,
-                                        (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
-                                    )
-                                })
-                                .collect();
+                                    let sum_f_ax3: f32 = frequencies_ax3[start..end].iter().sum();
+                                    let average_f_ax3 = sum_f_ax3 / ((end - start) as f32);
+                                    let sum_m_ax3: f32 = magnitudes_ax3[start..end].iter().sum();
+                                    let average_m_ax3 = sum_m_ax3 / ((end - start) as f32);
+                                    chunked_f_ax3.push(average_f_ax3);
+                                    chunked_m_ax3.push(average_m_ax3);
 
-                            let ax5_data: Vec<Pos2> = frequencies_ax5
-                                .iter()
-                                .zip(magnitudes_ax5.iter())
-                                .map(|(freq, magnitude)| {
-                                    let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
-                                    pos2(
-                                        freq.log10() * freq_scaler + x_shift,
-                                        (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
-                                    )
-                                })
-                                .collect();
+                                    let sum_f_ax4: f32 = frequencies_ax4[start..end].iter().sum();
+                                    let average_f_ax4 = sum_f_ax4 / ((end - start) as f32);
+                                    let sum_m_ax4: f32 = magnitudes_ax4[start..end].iter().sum();
+                                    let average_m_ax4 = sum_m_ax4 / ((end - start) as f32);
+                                    chunked_f_ax4.push(average_f_ax4);
+                                    chunked_m_ax4.push(average_m_ax4);
 
-                            let freqs: [f32; 12] = [
-                                0.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 18000.0];
-                            let scaled_ref_freqs: Vec<f32> = freqs.iter().map(|num|{num.log10() * freq_scaler}).collect();
-                            for (num,scaled_num) in freqs.iter().zip(scaled_ref_freqs.iter()) {
-                                shapes.push(
-                                    epaint::Shape::line_segment(
-                                        [
-                                            Pos2::new(*scaled_num + x_shift, 515.0),
-                                            Pos2::new(*scaled_num + x_shift, 30.0)
-                                        ],
-                                        Stroke::new(0.5, Color32::GRAY)
-                                    )
-                                );
-                                ui.painter().text(
-                                    Pos2::new(scaled_num + 2.0 + x_shift, 510.0), 
-                                    Align2::LEFT_CENTER, 
-                                    *num, 
-                                    FontId::monospace(12.0), 
-                                    Color32::GRAY
-                                );
+                                    let sum_f_ax5: f32 = frequencies_ax5[start..end].iter().sum();
+                                    let average_f_ax5 = sum_f_ax5 / ((end - start) as f32);
+                                    let sum_m_ax5: f32 = magnitudes_ax5[start..end].iter().sum();
+                                    let average_m_ax5 = sum_m_ax5 / ((end - start) as f32);
+                                    chunked_f_ax5.push(average_f_ax5);
+                                    chunked_m_ax5.push(average_m_ax5);
+                                }
+
+                                // Primary Input
+                                let data: Vec<Pos2> = chunked_f
+                                    .iter()
+                                    .zip(chunked_m.iter())
+                                    .map(|(freq, magnitude)| {
+                                        let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
+                                        pos2(
+                                            freq.log10() * bar_scaler + x_shift,
+                                            (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
+                                        )
+                                    })
+                                    .collect();
+
+                                // Aux inputs
+                                let data_ax1: Vec<Pos2> = chunked_f_ax1
+                                    .iter()
+                                    .zip(chunked_m_ax1.iter())
+                                    .map(|(freq, magnitude)| {
+                                        let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
+                                        pos2(
+                                            freq.log10() * bar_scaler + x_shift,
+                                            (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
+                                        )
+                                    })
+                                    .collect();
+
+                                let data_ax2: Vec<Pos2> = chunked_f_ax2
+                                    .iter()
+                                    .zip(chunked_m_ax2.iter())
+                                    .map(|(freq, magnitude)| {
+                                        let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
+                                        pos2(
+                                            freq.log10() * bar_scaler + x_shift,
+                                            (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
+                                        )
+                                    })
+                                    .collect();
+
+                                let data_ax3: Vec<Pos2> = chunked_f_ax3
+                                    .iter()
+                                    .zip(chunked_m_ax3.iter())
+                                    .map(|(freq, magnitude)| {
+                                        let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
+                                        pos2(
+                                            freq.log10() * bar_scaler + x_shift,
+                                            (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
+                                        )
+                                    })
+                                    .collect();
+
+                                let data_ax4: Vec<Pos2> = chunked_f_ax4
+                                    .iter()
+                                    .zip(chunked_m_ax4.iter())
+                                    .map(|(freq, magnitude)| {
+                                        let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
+                                        pos2(
+                                            freq.log10() * bar_scaler + x_shift,
+                                            (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
+                                        )
+                                    })
+                                    .collect();
+
+                                let data_ax5: Vec<Pos2> = chunked_f_ax5
+                                    .iter()
+                                    .zip(chunked_m_ax5.iter())
+                                    .map(|(freq, magnitude)| {
+                                        let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
+                                        pos2(
+                                            freq.log10() * bar_scaler + x_shift,
+                                            (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
+                                        )
+                                    })
+                                    .collect();
+
+                                    // Draw whichever order next
+                                    match ontop.load(Ordering::SeqCst) {
+                                        0 => {
+                                            if en_aux5.load(Ordering::SeqCst) { 
+                                                for elem in data_ax5.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_5
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux4.load(Ordering::SeqCst) { 
+                                                for elem in data_ax4.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_4
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux3.load(Ordering::SeqCst) { 
+                                                for elem in data_ax3.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_3
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux2.load(Ordering::SeqCst) { 
+                                                for elem in data_ax2.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_2
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux1.load(Ordering::SeqCst) { 
+                                                for elem in data_ax1.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_1
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_main.load(Ordering::SeqCst) { 
+                                                for elem in data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_primary_color
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        1 => {
+                                            if en_main.load(Ordering::SeqCst) { 
+                                                for elem in data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_primary_color
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux5.load(Ordering::SeqCst) { 
+                                                for elem in data_ax5.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_5
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux4.load(Ordering::SeqCst) { 
+                                                for elem in data_ax4.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_4
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux3.load(Ordering::SeqCst) { 
+                                                for elem in data_ax3.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_3
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux2.load(Ordering::SeqCst) { 
+                                                for elem in data_ax2.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_2
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux1.load(Ordering::SeqCst) { 
+                                                for elem in data_ax1.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_1
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        2 => {
+                                            if en_aux1.load(Ordering::SeqCst) { 
+                                                for elem in data_ax1.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_1
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_main.load(Ordering::SeqCst) { 
+                                                for elem in data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_primary_color
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux5.load(Ordering::SeqCst) { 
+                                                for elem in data_ax5.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_5
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux4.load(Ordering::SeqCst) { 
+                                                for elem in data_ax4.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_4
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux3.load(Ordering::SeqCst) { 
+                                                for elem in data_ax3.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_3
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux2.load(Ordering::SeqCst) { 
+                                                for elem in data_ax2.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_2
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        3 => {
+                                            if en_aux2.load(Ordering::SeqCst) { 
+                                                for elem in data_ax2.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_2
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux1.load(Ordering::SeqCst) { 
+                                                for elem in data_ax1.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_1
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_main.load(Ordering::SeqCst) { 
+                                                for elem in data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_primary_color
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux5.load(Ordering::SeqCst) { 
+                                                for elem in data_ax5.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_5
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux4.load(Ordering::SeqCst) { 
+                                                for elem in data_ax4.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_4
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux3.load(Ordering::SeqCst) { 
+                                                for elem in data_ax3.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_3
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        4 => {
+                                            if en_aux3.load(Ordering::SeqCst) { 
+                                                for elem in data_ax3.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_3
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux2.load(Ordering::SeqCst) { 
+                                                for elem in data_ax2.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_2
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux1.load(Ordering::SeqCst) { 
+                                                for elem in data_ax1.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_1
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_main.load(Ordering::SeqCst) { 
+                                                for elem in data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_primary_color
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux5.load(Ordering::SeqCst) { 
+                                                for elem in data_ax5.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_5
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux4.load(Ordering::SeqCst) { 
+                                                for elem in data_ax4.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_4
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        5 => {
+                                            if en_aux4.load(Ordering::SeqCst) { 
+                                                for elem in data_ax4.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_4
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux3.load(Ordering::SeqCst) { 
+                                                for elem in data_ax3.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_3
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux2.load(Ordering::SeqCst) { 
+                                                for elem in data_ax2.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_2
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux1.load(Ordering::SeqCst) { 
+                                                for elem in data_ax1.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_1
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_main.load(Ordering::SeqCst) { 
+                                                for elem in data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_primary_color
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux5.load(Ordering::SeqCst) { 
+                                                for elem in data_ax5.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(elem.x + x_shift, elem.y), 
+                                                                max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            user_aux_5
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            // We shouldn't be here
+                                        }
+                                    }
+
+                                ui.painter().extend(shapes);
+                            } else {
+                                // Primary Input
+                                let data: Vec<Pos2> = frequencies
+                                    .iter()
+                                    .zip(magnitudes.iter())
+                                    .map(|(freq, magnitude)| {
+                                        let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
+                                        pos2(
+                                            freq.log10() * freq_scaler + x_shift,
+                                            (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
+                                        )
+                                    })
+                                    .collect();
+
+                                // Aux
+                                let ax1_data: Vec<Pos2> = frequencies_ax1
+                                    .iter()
+                                    .zip(magnitudes_ax1.iter())
+                                    .map(|(freq, magnitude)| {
+                                        let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
+                                        pos2(
+                                            freq.log10() * freq_scaler + x_shift,
+                                            (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
+                                        )
+                                    })
+                                    .collect();
+
+                                let ax2_data: Vec<Pos2> = frequencies_ax2
+                                    .iter()
+                                    .zip(magnitudes_ax2.iter())
+                                    .map(|(freq, magnitude)| {
+                                        let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
+                                        pos2(
+                                            freq.log10() * freq_scaler + x_shift,
+                                            (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
+                                        )
+                                    })
+                                    .collect();
+
+                                let ax3_data: Vec<Pos2> = frequencies_ax3
+                                    .iter()
+                                    .zip(magnitudes_ax3.iter())
+                                    .map(|(freq, magnitude)| {
+                                        let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
+                                        pos2(
+                                            freq.log10() * freq_scaler + x_shift,
+                                            (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
+                                        )
+                                    })
+                                    .collect();
+
+                                let ax4_data: Vec<Pos2> = frequencies_ax4
+                                    .iter()
+                                    .zip(magnitudes_ax4.iter())
+                                    .map(|(freq, magnitude)| {
+                                        let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
+                                        pos2(
+                                            freq.log10() * freq_scaler + x_shift,
+                                            (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
+                                        )
+                                    })
+                                    .collect();
+
+                                let ax5_data: Vec<Pos2> = frequencies_ax5
+                                    .iter()
+                                    .zip(magnitudes_ax5.iter())
+                                    .map(|(freq, magnitude)| {
+                                        let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
+                                        pos2(
+                                            freq.log10() * freq_scaler + x_shift,
+                                            (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
+                                        )
+                                    })
+                                    .collect();
+
+                                if en_guidelines.load(Ordering::SeqCst) {
+                                    let freqs: [f32; 12] = [
+                                        0.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 18000.0];
+                                    let scaled_ref_freqs: Vec<f32> = freqs.iter().map(|num|{num.log10() * freq_scaler}).collect();
+                                    for (num,scaled_num) in freqs.iter().zip(scaled_ref_freqs.iter()) {
+                                        shapes.push(
+                                            epaint::Shape::line_segment(
+                                                [
+                                                    Pos2::new(*scaled_num + x_shift, 515.0),
+                                                    Pos2::new(*scaled_num + x_shift, 30.0)
+                                                ],
+                                                Stroke::new(0.5, Color32::GRAY)
+                                            )
+                                        );
+                                        ui.painter().text(
+                                            Pos2::new(scaled_num + 2.0 + x_shift, 510.0), 
+                                            Align2::LEFT_CENTER, 
+                                            *num, 
+                                            FontId::monospace(12.0), 
+                                            Color32::GRAY
+                                        );
+                                    }
+                                    let sub_freqs: [f32; 18] = [
+                                        30.0,40.0,60.0,70.0,80.0,90.0,300.0,400.0,600.0,700.0,800.0,900.0,3000.0,4000.0,6000.0,7000.0,8000.0,9000.0];
+                                    let scaled_sub_freqs: Vec<f32> = sub_freqs.iter().map(|num|{num.log10() * freq_scaler}).collect();
+                                    for scaled_num in scaled_sub_freqs.iter() {
+                                        shapes.push(
+                                            epaint::Shape::line_segment(
+                                                [
+                                                    Pos2::new(*scaled_num + x_shift, 515.0),
+                                                    Pos2::new(*scaled_num + x_shift, 30.0)
+                                                ],
+                                                Stroke::new(0.5, Color32::DARK_GRAY)
+                                            )
+                                        );
+                                    }
+                                }
+
+                                // Draw whichever order next
+                                match ontop.load(Ordering::SeqCst) {
+                                    0 => {
+                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                    }
+                                    1 => {
+                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                    }
+                                    2 => {
+                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                    }
+                                    3 => {
+                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                    }
+                                    4 => {
+                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                    }
+                                    5 => {
+                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                    }
+                                    _ => {
+                                        // We shouldn't be here
+                                    }
+                                }
+
+                                ui.painter().extend(shapes);
                             }
-                            let sub_freqs: [f32; 18] = [
-                                30.0,40.0,60.0,70.0,80.0,90.0,300.0,400.0,600.0,700.0,800.0,900.0,3000.0,4000.0,6000.0,7000.0,8000.0,9000.0];
-                            let scaled_sub_freqs: Vec<f32> = sub_freqs.iter().map(|num|{num.log10() * freq_scaler}).collect();
-                            for scaled_num in scaled_sub_freqs.iter() {
-                                shapes.push(
-                                    epaint::Shape::line_segment(
-                                        [
-                                            Pos2::new(*scaled_num + x_shift, 515.0),
-                                            Pos2::new(*scaled_num + x_shift, 30.0)
-                                        ],
-                                        Stroke::new(0.5, Color32::DARK_GRAY)
-                                    )
-                                );
-                            }
-
-                            // Draw whichever order next
-                            match *ontop.lock().unwrap() {
-                                0 => {
-                                    if *en_aux5.lock().unwrap() { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, aux_line_color_5))); }
-                                    if *en_aux4.lock().unwrap() { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, aux_line_color_4))); }
-                                    if *en_aux3.lock().unwrap() { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, aux_line_color_3))); }
-                                    if *en_aux2.lock().unwrap() { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, aux_line_color_2))); }
-                                    if *en_aux1.lock().unwrap() { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, aux_line_color))); }
-                                    if *en_main.lock().unwrap() { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, primary_line_color))); }
-                                }
-                                1 => {
-                                    if *en_main.lock().unwrap() { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, primary_line_color))); }
-                                    if *en_aux5.lock().unwrap() { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, aux_line_color_5))); }
-                                    if *en_aux4.lock().unwrap() { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, aux_line_color_4))); }
-                                    if *en_aux3.lock().unwrap() { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, aux_line_color_3))); }
-                                    if *en_aux2.lock().unwrap() { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, aux_line_color_2))); }
-                                    if *en_aux1.lock().unwrap() { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, aux_line_color))); }
-                                }
-                                2 => {
-                                    if *en_aux1.lock().unwrap() { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, aux_line_color))); }
-                                    if *en_main.lock().unwrap() { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, primary_line_color))); }
-                                    if *en_aux5.lock().unwrap() { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, aux_line_color_5))); }
-                                    if *en_aux4.lock().unwrap() { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, aux_line_color_4))); }
-                                    if *en_aux3.lock().unwrap() { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, aux_line_color_3))); }
-                                    if *en_aux2.lock().unwrap() { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, aux_line_color_2))); }
-                                }
-                                3 => {
-                                    if *en_aux2.lock().unwrap() { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, aux_line_color_2))); }
-                                    if *en_aux1.lock().unwrap() { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, aux_line_color))); }
-                                    if *en_main.lock().unwrap() { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, primary_line_color))); }
-                                    if *en_aux5.lock().unwrap() { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, aux_line_color_5))); }
-                                    if *en_aux4.lock().unwrap() { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, aux_line_color_4))); }
-                                    if *en_aux3.lock().unwrap() { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, aux_line_color_3))); }
-                                }
-                                4 => {
-                                    if *en_aux3.lock().unwrap() { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, aux_line_color_3))); }
-                                    if *en_aux2.lock().unwrap() { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, aux_line_color_2))); }
-                                    if *en_aux1.lock().unwrap() { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, aux_line_color))); }
-                                    if *en_main.lock().unwrap() { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, primary_line_color))); }
-                                    if *en_aux5.lock().unwrap() { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, aux_line_color_5))); }
-                                    if *en_aux4.lock().unwrap() { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, aux_line_color_4))); }
-                                }
-                                5 => {
-                                    if *en_aux4.lock().unwrap() { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, aux_line_color_4))); }
-                                    if *en_aux3.lock().unwrap() { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, aux_line_color_3))); }
-                                    if *en_aux2.lock().unwrap() { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, aux_line_color_2))); }
-                                    if *en_aux1.lock().unwrap() { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, aux_line_color))); }
-                                    if *en_main.lock().unwrap() { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, primary_line_color))); }
-                                    if *en_aux5.lock().unwrap() { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, aux_line_color_5))); }
-                                }
-                                _ => {
-                                    // We shouldn't be here
-                                }
-                            }
-
-                            ui.painter().extend(shapes);
                         } else {
                             let mut sum_data = samples.clone();
+
+                            let sbl: PlotPoints = scrolling_beat_lines
+                                .iter()
+                                .enumerate()
+                                .map(|(i, sample)| {
+                                    [i as f64, *sample as f64]
+                                })
+                                .collect();
+                            let sbl_line = Line::new(sbl)
+                                .color(guidelines)
+                                .stroke(Stroke::new(0.25, guidelines.linear_multiply(0.5)));
 
                             // Primary Input
                             let data: PlotPoints = samples
@@ -827,7 +1656,7 @@ impl Plugin for Scrollscope {
                                 .map(|(i, sample)| {
                                     let x: f64;
                                     let y: f64;
-                                    if *en_main.lock().unwrap() {
+                                    if en_main.load(Ordering::SeqCst) {
                                         x = i as f64;
                                         y = *sample as f64;
                                     } else {
@@ -848,7 +1677,7 @@ impl Plugin for Scrollscope {
                                 .map(|(i, sample)| {
                                     let x: f64;
                                     let y: f64;
-                                    if *en_aux1.lock().unwrap() {
+                                    if en_aux1.load(Ordering::SeqCst) {
                                         x = i as f64;
                                         y = *sample as f64;
                                         let sum_temp = sum_data.get_mut(i).unwrap();
@@ -861,8 +1690,8 @@ impl Plugin for Scrollscope {
                                 })
                                 .collect();
                             aux_line = Line::new(aux_data)
-                                .color(aux_line_color)
-                                .stroke(Stroke::new(1.0, aux_line_color));
+                                .color(user_aux_1)
+                                .stroke(Stroke::new(1.0, user_aux_1));
 
                             let aux_data_2: PlotPoints = aux_samples_2
                                 .iter()
@@ -870,7 +1699,7 @@ impl Plugin for Scrollscope {
                                 .map(|(i, sample)| {
                                     let x: f64;
                                     let y: f64;
-                                    if *en_aux2.lock().unwrap() {
+                                    if en_aux2.load(Ordering::SeqCst) {
                                         x = i as f64;
                                         y = *sample as f64;
                                         let sum_temp = sum_data.get_mut(i).unwrap();
@@ -883,8 +1712,8 @@ impl Plugin for Scrollscope {
                                 })
                                 .collect();
                             aux_line_2 = Line::new(aux_data_2)
-                                .color(aux_line_color_2)
-                                .stroke(Stroke::new(1.0, aux_line_color_2));
+                                .color(user_aux_2)
+                                .stroke(Stroke::new(1.0, user_aux_2));
 
                             let aux_data_3: PlotPoints = aux_samples_3
                                 .iter()
@@ -892,7 +1721,7 @@ impl Plugin for Scrollscope {
                                 .map(|(i, sample)| {
                                     let x: f64;
                                     let y: f64;
-                                    if *en_aux3.lock().unwrap() {
+                                    if en_aux3.load(Ordering::SeqCst) {
                                         x = i as f64;
                                         y = *sample as f64;
                                         let sum_temp = sum_data.get_mut(i).unwrap();
@@ -905,8 +1734,8 @@ impl Plugin for Scrollscope {
                                 })
                                 .collect();
                             aux_line_3 = Line::new(aux_data_3)
-                                .color(aux_line_color_3)
-                                .stroke(Stroke::new(1.0, aux_line_color_3));
+                                .color(user_aux_3)
+                                .stroke(Stroke::new(1.0, user_aux_3));
 
                             let aux_data_4: PlotPoints = aux_samples_4
                                 .iter()
@@ -914,7 +1743,7 @@ impl Plugin for Scrollscope {
                                 .map(|(i, sample)| {
                                     let x: f64;
                                     let y: f64;
-                                    if *en_aux4.lock().unwrap() {
+                                    if en_aux4.load(Ordering::SeqCst) {
                                         x = i as f64;
                                         y = *sample as f64;
                                         let sum_temp = sum_data.get_mut(i).unwrap();
@@ -927,8 +1756,8 @@ impl Plugin for Scrollscope {
                                 })
                                 .collect();
                             aux_line_4 = Line::new(aux_data_4)
-                                .color(aux_line_color_4)
-                                .stroke(Stroke::new(1.0, aux_line_color_4));
+                                .color(user_aux_4)
+                                .stroke(Stroke::new(1.0, user_aux_4));
 
                             let aux_data_5: PlotPoints = aux_samples_5
                                 .iter()
@@ -936,7 +1765,7 @@ impl Plugin for Scrollscope {
                                 .map(|(i, sample)| {
                                     let x: f64;
                                     let y: f64;
-                                    if *en_aux5.lock().unwrap() {
+                                    if en_aux5.load(Ordering::SeqCst) {
                                         x = i as f64;
                                         y = *sample as f64;
                                         let sum_temp = sum_data.get_mut(i).unwrap();
@@ -949,10 +1778,10 @@ impl Plugin for Scrollscope {
                                 })
                                 .collect();
                             aux_line_5 = Line::new(aux_data_5)
-                                .color(aux_line_color_5)
-                                .stroke(Stroke::new(1.0, aux_line_color_5));
+                                .color(user_aux_5)
+                                .stroke(Stroke::new(1.0, user_aux_5));
 
-                            if *en_sum.lock().unwrap() {
+                            if en_sum.load(Ordering::SeqCst) {
                                 // Summed audio line
                                 let sum_plotpoints: PlotPoints = sum_data
                                     .iter()
@@ -964,8 +1793,8 @@ impl Plugin for Scrollscope {
                                     })
                                     .collect();
                                 sum_line = Line::new(sum_plotpoints)
-                                    .color(sum_line_color.linear_multiply(0.25))
-                                    .stroke(Stroke::new(0.9, sum_line_color));
+                                    .color(user_sum_line.linear_multiply(0.25))
+                                    .stroke(Stroke::new(0.9, user_sum_line));
                             }
 
                             // Show the Oscilloscope
@@ -985,7 +1814,9 @@ impl Plugin for Scrollscope {
                                 // Format hover to blank or value
                                 .label_formatter(|_, _| "".to_owned())
                                 .show(ui, |plot_ui| {
-                                    if *en_sum.lock().unwrap() {
+                                    plot_ui.line(sbl_line);
+
+                                    if en_sum.load(Ordering::SeqCst) {
                                         // Draw the sum line first so it's furthest behind
                                         plot_ui.line(sum_line);
                                     }
@@ -993,124 +1824,124 @@ impl Plugin for Scrollscope {
                                     // Figure out the lines to draw
 
                                     // Draw whichever order next
-                                    match *ontop.lock().unwrap() {
+                                    match ontop.load(Ordering::SeqCst) {
                                         0 => {
-                                            if *en_aux5.lock().unwrap() {
+                                            if en_aux5.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_5);
                                             }
-                                            if *en_aux4.lock().unwrap() {
+                                            if en_aux4.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_4);
                                             }
-                                            if *en_aux3.lock().unwrap() {
+                                            if en_aux3.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_3);
                                             }
-                                            if *en_aux2.lock().unwrap() {
+                                            if en_aux2.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_2);
                                             }
-                                            if *en_aux1.lock().unwrap() {
+                                            if en_aux1.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line);
                                             }
-                                            if *en_main.lock().unwrap() {
+                                            if en_main.load(Ordering::SeqCst) {
                                                 plot_ui.line(line);
                                             }
                                         }
                                         1 => {
-                                            if *en_main.lock().unwrap() {
+                                            if en_main.load(Ordering::SeqCst) {
                                                 plot_ui.line(line);
                                             }
-                                            if *en_aux5.lock().unwrap() {
+                                            if en_aux5.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_5);
                                             }
-                                            if *en_aux4.lock().unwrap() {
+                                            if en_aux4.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_4);
                                             }
-                                            if *en_aux3.lock().unwrap() {
+                                            if en_aux3.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_3);
                                             }
-                                            if *en_aux2.lock().unwrap() {
+                                            if en_aux2.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_2);
                                             }
-                                            if *en_aux1.lock().unwrap() {
+                                            if en_aux1.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line);
                                             }
                                         }
                                         2 => {
-                                            if *en_aux1.lock().unwrap() {
+                                            if en_aux1.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line);
                                             }
-                                            if *en_main.lock().unwrap() {
+                                            if en_main.load(Ordering::SeqCst) {
                                                 plot_ui.line(line);
                                             }
-                                            if *en_aux5.lock().unwrap() {
+                                            if en_aux5.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_5);
                                             }
-                                            if *en_aux4.lock().unwrap() {
+                                            if en_aux4.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_4);
                                             }
-                                            if *en_aux3.lock().unwrap() {
+                                            if en_aux3.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_3);
                                             }
-                                            if *en_aux2.lock().unwrap() {
+                                            if en_aux2.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_2);
                                             }
                                         }
                                         3 => {
-                                            if *en_aux2.lock().unwrap() {
+                                            if en_aux2.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_2);
                                             }
-                                            if *en_aux1.lock().unwrap() {
+                                            if en_aux1.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line);
                                             }
-                                            if *en_main.lock().unwrap() {
+                                            if en_main.load(Ordering::SeqCst) {
                                                 plot_ui.line(line);
                                             }
-                                            if *en_aux5.lock().unwrap() {
+                                            if en_aux5.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_5);
                                             }
-                                            if *en_aux4.lock().unwrap() {
+                                            if en_aux4.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_4);
                                             }
-                                            if *en_aux3.lock().unwrap() {
+                                            if en_aux3.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_3);
                                             }
                                         }
                                         4 => {
-                                            if *en_aux3.lock().unwrap() {
+                                            if en_aux3.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_3);
                                             }
-                                            if *en_aux2.lock().unwrap() {
+                                            if en_aux2.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_2);
                                             }
-                                            if *en_aux1.lock().unwrap() {
+                                            if en_aux1.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line);
                                             }
-                                            if *en_main.lock().unwrap() {
+                                            if en_main.load(Ordering::SeqCst) {
                                                 plot_ui.line(line);
                                             }
-                                            if *en_aux5.lock().unwrap() {
+                                            if en_aux5.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_5);
                                             }
-                                            if *en_aux4.lock().unwrap() {
+                                            if en_aux4.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_4);
                                             }
                                         }
                                         5 => {
-                                            if *en_aux4.lock().unwrap() {
+                                            if en_aux4.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_4);
                                             }
-                                            if *en_aux3.lock().unwrap() {
+                                            if en_aux3.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_3);
                                             }
-                                            if *en_aux2.lock().unwrap() {
+                                            if en_aux2.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_2);
                                             }
-                                            if *en_aux1.lock().unwrap() {
+                                            if en_aux1.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line);
                                             }
-                                            if *en_main.lock().unwrap() {
+                                            if en_main.load(Ordering::SeqCst) {
                                                 plot_ui.line(line);
                                             }
-                                            if *en_aux5.lock().unwrap() {
+                                            if en_aux5.load(Ordering::SeqCst) {
                                                 plot_ui.line(aux_line_5);
                                             }
                                         }
@@ -1140,7 +1971,7 @@ impl Plugin for Scrollscope {
                     });
 
                     // Put things back after drawing so process() isn't broken
-                    if *dir_var.lock().unwrap() {
+                    if dir_var.load(Ordering::SeqCst) {
                         samples.make_contiguous().reverse();
                         aux_samples_1.make_contiguous().reverse();
                         aux_samples_2.make_contiguous().reverse();
@@ -1186,15 +2017,19 @@ impl Plugin for Scrollscope {
             let aux_3 = aux.inputs[3].as_slice_immutable();
             let aux_4 = aux.inputs[4].as_slice_immutable();
 
-            if !*self.show_analyzer.lock().unwrap() {
+            if !self.show_analyzer.load(Ordering::SeqCst) {
                 for (b0, ax0, ax1, ax2, ax3, ax4) in
                     izip!(raw_buffer, aux_0, aux_1, aux_2, aux_3, aux_4)
                 {
+                    let mut current_beat: f64 = context.transport().pos_beats().unwrap();
+                    let temp_current_beat: f64 = (current_beat * 10000.0 as f64).round() / 10000.0 as f64;
+                    if temp_current_beat % 1.0 == 0.0 && context.transport().playing {
+                        self.add_beat_line.store(true, Ordering::SeqCst);
+                    }
                     // Beat syncing control
-                    if *self.sync_var.lock().unwrap() {
+                    if self.sync_var.load(Ordering::SeqCst) {
                         // Make the current bar precision a one thousandth of a beat - I couldn't find a better way to do this
-                        let mut current_beat: f64 = context.transport().pos_beats().unwrap();
-                        if *self.alt_sync.lock().unwrap() {
+                        if self.alt_sync.load(Ordering::SeqCst) {
                             // Jitter reduction in timeline dependent DAWs
                             let start_pos = context.transport().bar_start_pos_beats().unwrap();
                             if current_beat < start_pos {
@@ -1211,28 +2046,29 @@ impl Plugin for Scrollscope {
                                     // Tracks based off beat number for other daws - this is a mutex instead of atomic for locking
                                     if current_beat % 4.0 <= threshold {
                                         // If this is the first time we've been under our threshold, reset our drawing
-                                        if *self.threshold_combo.lock().unwrap() == 0 {
+                                        if self.threshold_combo.load(Ordering::SeqCst) == 0 {
                                             // I'm wondering if this reassign was part of the jitter issue instead of being an update so I changed that too
-                                            *self.in_place_index.lock().unwrap() = 0;
-                                            //self.skip_counter = 0;
+                                            //*self.in_place_index.lock().unwrap() = 0;
+                                            self.in_place_index.store(0, Ordering::SeqCst);
                                         }
                                         // Increment here so multiple threshold hits in a row don't stack
-                                        *self.threshold_combo.lock().unwrap() += 1;
+                                        self.threshold_combo.fetch_add(1, Ordering::SeqCst);
+                                        //*self.threshold_combo.lock().unwrap() += 1;
                                     } else {
                                         // We haven't met threshold, keep it 0
-                                        *self.threshold_combo.lock().unwrap() = 0;
+                                        self.in_place_index.store(0, Ordering::SeqCst);
                                     }
                                 }
                                 BeatSync::Beat => {
                                     // Tracks based off beat number for other daws - this is a mutex instead of atomic for locking
                                     if current_beat % 1.0 <= threshold {
-                                        if *self.threshold_combo.lock().unwrap() == 0 {
-                                            *self.in_place_index.lock().unwrap() = 0;
+                                        if self.threshold_combo.load(Ordering::SeqCst) == 0 {
+                                            self.in_place_index.store(0, Ordering::SeqCst);
                                             //self.skip_counter = 0;
                                         }
-                                        *self.threshold_combo.lock().unwrap() += 1;
+                                        self.threshold_combo.fetch_add(1, Ordering::SeqCst);
                                     } else {
-                                        *self.threshold_combo.lock().unwrap() = 0;
+                                        self.threshold_combo.store(0, Ordering::SeqCst);
                                     }
                                 }
                             }
@@ -1244,7 +2080,7 @@ impl Plugin for Scrollscope {
                                     if current_beat % 4.0 == 0.0 {
                                         // Reset our index to the sample vecdeques
                                         //self.in_place_index = Arc::new(Mutex::new(0));
-                                        *self.in_place_index.lock().unwrap() = 0;
+                                        self.in_place_index.store(0, Ordering::SeqCst);
                                         self.skip_counter = 0;
                                     }
                                 }
@@ -1252,7 +2088,7 @@ impl Plugin for Scrollscope {
                                     if current_beat % 1.0 == 0.0 {
                                         // Reset our index to the sample vecdeques
                                         //self.in_place_index = Arc::new(Mutex::new(0));
-                                        *self.in_place_index.lock().unwrap() = 0;
+                                        self.in_place_index.store(0, Ordering::SeqCst);
                                         self.skip_counter = 0;
                                     }
                                 }
@@ -1325,10 +2161,11 @@ impl Plugin for Scrollscope {
                             let mut aux_guard_3 = self.aux_samples_3.lock().unwrap();
                             let mut aux_guard_4 = self.aux_samples_4.lock().unwrap();
                             let mut aux_guard_5 = self.aux_samples_5.lock().unwrap();
+                            let mut sbl_guard = self.scrolling_beat_lines.lock().unwrap();
                             // If beat sync is on, we need to process changes in place
-                            if *self.sync_var.lock().unwrap() {
+                            if self.sync_var.load(Ordering::SeqCst) {
                                 // Access the in place index
-                                let ipi_index: usize = *self.in_place_index.lock().unwrap() as usize;
+                                let ipi_index: usize = self.in_place_index.load(Ordering::SeqCst) as usize;
                                 // Check if our indexes exists
                                 let main_element: Option<&f32> = guard.get(ipi_index);
                                 let aux_element: Option<&f32> = aux_guard.get(ipi_index);
@@ -1372,10 +2209,17 @@ impl Plugin for Scrollscope {
                                     *aux_index_value_5 = visual_aux_sample_5;
                                 }
                                 // Increment our in_place_index now that we have substituted
-                                *self.in_place_index.lock().unwrap() = ipi_index as i32 + 1;
+                                self.in_place_index.fetch_add(1, Ordering::SeqCst);
                             }
                             // Beat sync is off: allow "scroll"
                             else {
+                                if self.add_beat_line.load(Ordering::SeqCst) {
+                                    sbl_guard.push_front(1.0);
+                                    sbl_guard.push_front(-1.0);
+                                    self.add_beat_line.store(false, Ordering::SeqCst);
+                                } else {
+                                    sbl_guard.push_front(0.0);
+                                }
                                 guard.push_front(visual_main_sample);
                                 aux_guard.push_front(visual_aux_sample_1);
                                 aux_guard_2.push_front(visual_aux_sample_2);
@@ -1404,6 +2248,9 @@ impl Plugin for Scrollscope {
                             }
                             if aux_guard_5.len() != scroll {
                                 aux_guard_5.resize(scroll, 0.0);
+                            }
+                            if sbl_guard.len() != scroll {
+                                sbl_guard.resize(scroll, 0.0);
                             }
                         }
                         self.skip_counter += 1;
@@ -1526,6 +2373,7 @@ impl Vst3Plugin for Scrollscope {
 
 nih_export_clap!(Scrollscope);
 nih_export_vst3!(Scrollscope);
+
 
 fn pivot_frequency_slope(freq: f32, magnitude: f32, f0: f32, slope: f32) -> f32{
     if freq < f0 {

@@ -15,7 +15,29 @@ Note this can take a sidechain input! Do the routing in FL in plugin processing 
 VST3: Copy the vst3 file to C:\Program Files\Common Files\VST3
 CLAP: Copy the CLAP file to C:\Program Files\Common Files\CLAP
 
-I don't know the plugin install locations for linux or mac sorry
+*When this plugin runs the first time it will attempt to create a config file: Scrollscope.ini under:*
+- $XDG_CONFIG_HOME or $HOME/.config on Linux
+- $HOME/Library/Application Support on MacOS
+- FOLDERID_LocalAppData on Windows (like C:\Users\Ardura\AppData\Local\)
+
+You can use this config to make your own custom color themes, have fun!
+
+Here is the default config otherwise (Also included in source)
+```ini
+# These are in RGB
+[ui_colors]
+background = 40,40,40
+guidelines = 160,160,160
+ui_main_color = 239,123,69
+user_main = 239,123,69
+user_aux_1 = 14,177,210
+user_aux_2 = 50,255,40
+user_aux_3 = 0,153,255
+user_aux_4 = 255,0,255
+user_aux_5 = 230,80,80
+user_sum_line = 248,255,31
+inactive_bg = 60,60,60
+```
 
 ## Features
 - Sidechain input graphing - simply route sidechain input from another channel (up to 5)

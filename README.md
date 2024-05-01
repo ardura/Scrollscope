@@ -48,6 +48,8 @@ inactive_bg = 60,60,60
 - Reordering waveforms to display main or sidechain on top
 - Beat synchronization and Bar Synchronization
 - Support for different DAWs with different time-tracking modes (Alt Sync option)
+- Standalone version. I've run it on Windows to test with options like: ./scrollscope.exe --input-device 'Stereo Mix (Realtek(R) Audio)' --sample-rate 48000
+Note that with the standalone version, I'm not sure how to setup the aux inputs sorry - I've just used the standalone generation in nih-plug.
 
 This plugin was made possible thanks to the Nih-Plug Rust Library and the egui GUI library
 

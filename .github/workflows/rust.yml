@@ -56,5 +56,5 @@ jobs:
     - uses: actions/upload-artifact@v4
       with:
         name: windows_build
-        path: target/bundled/scrollscope.vst3
+        path: target/bundled/*
         if-no-files-found: warn

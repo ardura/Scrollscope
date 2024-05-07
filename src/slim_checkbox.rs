@@ -122,7 +122,8 @@ impl<'a> Widget for AtomicSlimCheckbox<'a> {
     }
 }
 
-
+// This is here but I don't use it in scrollscope
+#[allow(dead_code)]
 impl<'a> SlimCheckbox<'a> {
     pub fn new(checked: &'a mut bool, text: impl Into<WidgetText>) -> Self {
         SlimCheckbox {

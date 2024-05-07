@@ -4,5 +4,5 @@
 # [package_name]
 # name = "Human Readable Plugin Name"  # defaults to <package_name>
 
-[Duro_Compressor]
-name = "Duro Compressor"
+[Scrollscope]
+name = "Scrollscope"

@@ -1,4 +1,4 @@
-use atomic_float::AtomicF32;
+use atomic_float::{AtomicF32};
 use configparser::ini::Ini;
 use itertools::{izip};
 use nih_plug::{prelude::*};
@@ -16,11 +16,14 @@ use std::{collections::VecDeque, ops::RangeInclusive, sync::Mutex};
 mod slim_checkbox;
 
 /**************************************************
- * Scrollscope v1.3.1 by Ardura
+ * Scrollscope v1.3.2 by Ardura
  * "A simple scrolling Oscilloscope has become complex now"
  *
  * Build with: cargo xtask bundle scrollscope --profile release
  * Debug with: cargo xtask bundle scrollscope --profile profiling
+ * 
+ * If you don't want/need the standalone version you can save time by only compiling the VST + CLAP with "--lib"
+ * cargo xtask bundle scrollscope --profile release --lib
  * ************************************************/
 
 #[derive(Enum, Clone, PartialEq)]
@@ -60,7 +63,7 @@ pub struct Scrollscope {
     sync_var: Arc<AtomicBool>,
     alt_sync: Arc<AtomicBool>,
     in_place_index: Arc<AtomicI32>,
-    threshold_combo: Arc<AtomicI32>,
+    beat_threshold: Arc<AtomicI32>,
     add_beat_line: Arc<AtomicBool>,
 
     // FFT/Analyzer
@@ -122,7 +125,7 @@ impl Default for Scrollscope {
             alt_sync: Arc::new(AtomicBool::new(false)),
             add_beat_line: Arc::new(AtomicBool::new(false)),
             in_place_index: Arc::new(AtomicI32::new(0)),
-            threshold_combo: Arc::new(AtomicI32::new(0)),
+            beat_threshold: Arc::new(AtomicI32::new(0)),
             fft: Arc::new(Mutex::new(FftPlanner::new())),
             show_analyzer: Arc::new(AtomicBool::new(false)),
             sample_rate: Arc::new(AtomicF32::new(44100.0)),
@@ -468,38 +471,38 @@ inactive_bg = 60,60,60");
                                 let dir_response = ui.add(dir_box).on_hover_text("Flip direction of oscilloscope");
 
                                 // Reset our line on change
-                            if sync_response.clicked()
-                            || dir_response.clicked()
-                            || alt_sync_response.clicked()
-                            || timing_response.changed()
-                        {
-                            // Keep same direction when syncing (Issue #12)
-                            if sync_response.clicked() {
-                                // If flip selected already, it should be deselected on this click
-                                if dir_var.load(Ordering::SeqCst) {
-                                    dir_var.store(false, Ordering::SeqCst);
+                                if sync_response.clicked()
+                                || dir_response.clicked()
+                                || alt_sync_response.clicked()
+                                || timing_response.changed()
+                                {
+                                    // Keep same direction when syncing (Issue #12)
+                                    if sync_response.clicked() {
+                                        // If flip selected already, it should be deselected on this click
+                                        if dir_var.load(Ordering::SeqCst) {
+                                            dir_var.store(false, Ordering::SeqCst);
+                                        }
+                                        // If flip not selected, it should now be selected
+                                        else {
+                                            dir_var.store(true, Ordering::SeqCst);
+                                        }
+                                    }
+                                    sum_line = Line::new(PlotPoints::default());
+                                    aux_line = Line::new(PlotPoints::default());
+                                    aux_line_2 = Line::new(PlotPoints::default());
+                                    aux_line_3 = Line::new(PlotPoints::default());
+                                    aux_line_4 = Line::new(PlotPoints::default());
+                                    aux_line_5 = Line::new(PlotPoints::default());
+                                    scrolling_beat_line = Line::new(PlotPoints::default());
+                                    line = Line::new(PlotPoints::default());
+                                    samples.clear();
+                                    aux_samples_1.clear();
+                                    aux_samples_2.clear();
+                                    aux_samples_3.clear();
+                                    aux_samples_4.clear();
+                                    aux_samples_5.clear();
+                                    scrolling_beat_lines.clear();
                                 }
-                                // If flip not selected, it should now be selected
-                                else {
-                                    dir_var.store(true, Ordering::SeqCst);
-                                }
-                            }
-                            sum_line = Line::new(PlotPoints::default());
-                            aux_line = Line::new(PlotPoints::default());
-                            aux_line_2 = Line::new(PlotPoints::default());
-                            aux_line_3 = Line::new(PlotPoints::default());
-                            aux_line_4 = Line::new(PlotPoints::default());
-                            aux_line_5 = Line::new(PlotPoints::default());
-                            scrolling_beat_line = Line::new(PlotPoints::default());
-                            line = Line::new(PlotPoints::default());
-                            samples.clear();
-                            aux_samples_1.clear();
-                            aux_samples_2.clear();
-                            aux_samples_3.clear();
-                            aux_samples_4.clear();
-                            aux_samples_5.clear();
-                            scrolling_beat_lines.clear();
-                        }
                             }
 
                             if swap_response.clicked() {
@@ -801,8 +804,9 @@ inactive_bg = 60,60,60");
 
                             if en_bar_mode.load(Ordering::SeqCst) {
                                 let length = frequencies.len();
-                                let bar_scaler = 300.0;
-                                let bars: f32 = 32.0;
+                                //let bar_scaler = 300.0;
+                                let bar_scaler = 1.6;
+                                let bars: f32 = 64.0;
                                 let chunk_size = length as f32 / bars;
                                 let mut chunked_f: Vec<f32> = Vec::with_capacity(bars as usize);
                                 let mut chunked_m: Vec<f32> = Vec::with_capacity(bars as usize);
@@ -870,11 +874,13 @@ inactive_bg = 60,60,60");
                                 // Primary Input
                                 let data: Vec<Pos2> = chunked_f
                                     .iter()
+                                    .enumerate()
                                     .zip(chunked_m.iter())
-                                    .map(|(freq, magnitude)| {
+                                    .map(|((i, freq), magnitude)| {
                                         let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                         pos2(
-                                            freq.log10() * bar_scaler + x_shift,
+                                            //freq.log10() * bar_scaler + x_shift,
+                                            i as f32 * 10.0 * bar_scaler + 230.0,
                                             (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                         )
                                     })
@@ -883,11 +889,13 @@ inactive_bg = 60,60,60");
                                 // Aux inputs
                                 let data_ax1: Vec<Pos2> = chunked_f_ax1
                                     .iter()
+                                    .enumerate()
                                     .zip(chunked_m_ax1.iter())
-                                    .map(|(freq, magnitude)| {
+                                    .map(|((i, freq), magnitude)| {
                                         let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                         pos2(
-                                            freq.log10() * bar_scaler + x_shift,
+                                            //freq.log10() * bar_scaler + x_shift,
+                                            i as f32 * 10.0 * bar_scaler + 230.0,
                                             (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                         )
                                     })
@@ -895,11 +903,13 @@ inactive_bg = 60,60,60");
 
                                 let data_ax2: Vec<Pos2> = chunked_f_ax2
                                     .iter()
+                                    .enumerate()
                                     .zip(chunked_m_ax2.iter())
-                                    .map(|(freq, magnitude)| {
+                                    .map(|((i, freq), magnitude)| {
                                         let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                         pos2(
-                                            freq.log10() * bar_scaler + x_shift,
+                                            //freq.log10() * bar_scaler + x_shift,
+                                            i as f32 * 10.0 * bar_scaler + 230.0,
                                             (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                         )
                                     })
@@ -907,11 +917,13 @@ inactive_bg = 60,60,60");
 
                                 let data_ax3: Vec<Pos2> = chunked_f_ax3
                                     .iter()
+                                    .enumerate()
                                     .zip(chunked_m_ax3.iter())
-                                    .map(|(freq, magnitude)| {
+                                    .map(|((i, freq), magnitude)| {
                                         let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                         pos2(
-                                            freq.log10() * bar_scaler + x_shift,
+                                            //freq.log10() * bar_scaler + x_shift,
+                                            i as f32 * 10.0 * bar_scaler + 230.0,
                                             (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                         )
                                     })
@@ -919,11 +931,13 @@ inactive_bg = 60,60,60");
 
                                 let data_ax4: Vec<Pos2> = chunked_f_ax4
                                     .iter()
+                                    .enumerate()
                                     .zip(chunked_m_ax4.iter())
-                                    .map(|(freq, magnitude)| {
+                                    .map(|((i, freq), magnitude)| {
                                         let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                         pos2(
-                                            freq.log10() * bar_scaler + x_shift,
+                                            //freq.log10() * bar_scaler + x_shift,
+                                            i as f32 * 10.0 * bar_scaler + 230.0,
                                             (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                         )
                                     })
@@ -931,11 +945,13 @@ inactive_bg = 60,60,60");
 
                                 let data_ax5: Vec<Pos2> = chunked_f_ax5
                                     .iter()
+                                    .enumerate()
                                     .zip(chunked_m_ax5.iter())
-                                    .map(|(freq, magnitude)| {
+                                    .map(|((i, freq), magnitude)| {
                                         let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                         pos2(
-                                            freq.log10() * bar_scaler + x_shift,
+                                            //freq.log10() * bar_scaler + x_shift,
+                                            i as f32 * 10.0 * bar_scaler + 230.0,
                                             (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                         )
                                     })
@@ -1636,6 +1652,28 @@ inactive_bg = 60,60,60");
                                 ui.painter().extend(shapes);
                             }
                         } else {
+                            /*
+                            if alt_sync.load(Ordering::SeqCst) {
+                                while samples.back().map_or(false, |&x| x == 0.0) {
+                                    samples.pop_back();
+                                }
+                                while aux_samples_1.back().map_or(false, |&x| x == 0.0) {
+                                    aux_samples_1.pop_back();
+                                }
+                                while aux_samples_2.back().map_or(false, |&x| x == 0.0) {
+                                    aux_samples_2.pop_back();
+                                }
+                                while aux_samples_3.back().map_or(false, |&x| x == 0.0) {
+                                    aux_samples_3.pop_back();
+                                }
+                                while aux_samples_4.back().map_or(false, |&x| x == 0.0) {
+                                    aux_samples_4.pop_back();
+                                }
+                                while aux_samples_5.back().map_or(false, |&x| x == 0.0) {
+                                    aux_samples_5.pop_back();
+                                }
+                            }
+                            */
                             let mut sum_data = samples.clone();
 
                             let sbl: PlotPoints = scrolling_beat_lines
@@ -1978,6 +2016,7 @@ inactive_bg = 60,60,60");
                         aux_samples_3.make_contiguous().reverse();
                         aux_samples_4.make_contiguous().reverse();
                         aux_samples_5.make_contiguous().reverse();
+                        scrolling_beat_lines.make_contiguous().reverse();
                     }
                 });
             },
@@ -2021,63 +2060,69 @@ inactive_bg = 60,60,60");
                 for (b0, ax0, ax1, ax2, ax3, ax4) in
                     izip!(raw_buffer, aux_0, aux_1, aux_2, aux_3, aux_4)
                 {
-                    let mut current_beat: f64 = context.transport().pos_beats().unwrap();
+                    let current_beat: f64 = context.transport().pos_beats().unwrap();
                     let temp_current_beat: f64 = (current_beat * 10000.0 as f64).round() / 10000.0 as f64;
-                    if temp_current_beat % 1.0 == 0.0 && context.transport().playing {
+                    let offset: i64 = 1000;
+                    let sample_pos: i64;
+                    let sample_pos_round: f64;
+                    let mut time_seconds: f64 = 0.0;
+                    let beat_length_seconds: f64;
+                    let mut expected_beat_times: Vec<f64> = Vec::new();
+                    let tolerance: f64 = 0.021;
+                    let mut is_on_beat: bool = false;
+                    if self.alt_sync.load(Ordering::SeqCst) {
+                        sample_pos = context.transport().pos_samples().unwrap() + offset;
+                        sample_pos_round = (sample_pos as f64 * 1000.0 as f64).round() / 1000.0 as f64;
+                        time_seconds = sample_pos_round as f64 / self.sample_rate.load(Ordering::SeqCst) as f64;
+                        beat_length_seconds = 60.0 / context.transport().tempo.unwrap();
+                        expected_beat_times = (0..).map(|i| i as f64 * beat_length_seconds).take_while(|&t| t < time_seconds).collect();
+                        is_on_beat = expected_beat_times.iter().any(|&beat_time| (time_seconds - beat_time).abs() < tolerance);
+                        if context.transport().playing && is_on_beat
+                        {
+                            self.add_beat_line.store(true, Ordering::SeqCst);
+                        }
+                    } else if temp_current_beat % 1.0 == 0.0 && context.transport().playing {
                         self.add_beat_line.store(true, Ordering::SeqCst);
                     }
                     // Beat syncing control
                     if self.sync_var.load(Ordering::SeqCst) {
-                        // Make the current bar precision a one thousandth of a beat - I couldn't find a better way to do this
                         if self.alt_sync.load(Ordering::SeqCst) {
-                            // Jitter reduction in timeline dependent DAWs
-                            let start_pos = context.transport().bar_start_pos_beats().unwrap();
-                            if current_beat < start_pos {
-                                continue;
-                            }
-                            // This should still play well with other DAWs using this timing
-                            current_beat =
-                                ((0.075 + current_beat) * 10000.0 as f64).ceil() / 10000.0 as f64;
-                            // I found this through trial and error w/ Ardour on Windows
-                            let threshold = 0.045759;
-                            // Added in Issue #11 Alternate timing for other DAWs
-                            match self.params.sync_timing.value() {
-                                BeatSync::Bar => {
-                                    // Tracks based off beat number for other daws - this is a mutex instead of atomic for locking
-                                    if current_beat % 4.0 <= threshold {
-                                        // If this is the first time we've been under our threshold, reset our drawing
-                                        if self.threshold_combo.load(Ordering::SeqCst) == 0 {
-                                            // I'm wondering if this reassign was part of the jitter issue instead of being an update so I changed that too
-                                            //*self.in_place_index.lock().unwrap() = 0;
-                                            self.in_place_index.store(0, Ordering::SeqCst);
+                            if context.transport().playing {
+                                match self.params.sync_timing.value() {
+                                    BeatSync::Bar => {
+                                        let is_on_bar = expected_beat_times.iter().any(|&beat_time| (time_seconds - (beat_time * 4.0)).abs() < tolerance);
+                                        if is_on_bar {
+                                            if self.beat_threshold.load(Ordering::SeqCst) == 0 {
+                                                self.in_place_index.store(0, Ordering::SeqCst);
+                                                self.beat_threshold.fetch_add(1, Ordering::SeqCst);
+                                            }
+                                        } else {
+                                            if self.beat_threshold.load(Ordering::SeqCst) > 0 {
+                                                self.beat_threshold.store(0, Ordering::SeqCst);
+                                            }
                                         }
-                                        // Increment here so multiple threshold hits in a row don't stack
-                                        self.threshold_combo.fetch_add(1, Ordering::SeqCst);
-                                        //*self.threshold_combo.lock().unwrap() += 1;
-                                    } else {
-                                        // We haven't met threshold, keep it 0
-                                        self.in_place_index.store(0, Ordering::SeqCst);
+                                    },
+                                    BeatSync::Beat => {
+                                        if is_on_beat {
+                                            if self.beat_threshold.load(Ordering::SeqCst) == 0 {
+                                                self.in_place_index.store(0, Ordering::SeqCst);
+                                                self.beat_threshold.fetch_add(1, Ordering::SeqCst);
+                                            }
+                                        } else {
+                                            if self.beat_threshold.load(Ordering::SeqCst) > 0 {
+                                                self.beat_threshold.store(0, Ordering::SeqCst);
+                                            }
+                                        }
                                     }
                                 }
-                                BeatSync::Beat => {
-                                    // Tracks based off beat number for other daws - this is a mutex instead of atomic for locking
-                                    if current_beat % 1.0 <= threshold {
-                                        if self.threshold_combo.load(Ordering::SeqCst) == 0 {
-                                            self.in_place_index.store(0, Ordering::SeqCst);
-                                            //self.skip_counter = 0;
-                                        }
-                                        self.threshold_combo.fetch_add(1, Ordering::SeqCst);
-                                    } else {
-                                        self.threshold_combo.store(0, Ordering::SeqCst);
-                                    }
-                                }
+                            } else {
+                                self.in_place_index.store(0, Ordering::SeqCst);
                             }
                         } else {
                             // Works in FL Studio but not other daws, hence the previous couple of lines
-                            current_beat = (current_beat * 10000.0 as f64).round() / 10000.0 as f64;
                             match self.params.sync_timing.value() {
                                 BeatSync::Bar => {
-                                    if current_beat % 4.0 == 0.0 {
+                                    if temp_current_beat % 4.0 == 0.0 {
                                         // Reset our index to the sample vecdeques
                                         //self.in_place_index = Arc::new(Mutex::new(0));
                                         self.in_place_index.store(0, Ordering::SeqCst);
@@ -2085,7 +2130,7 @@ inactive_bg = 60,60,60");
                                     }
                                 }
                                 BeatSync::Beat => {
-                                    if current_beat % 1.0 == 0.0 {
+                                    if temp_current_beat % 1.0 == 0.0 {
                                         // Reset our index to the sample vecdeques
                                         //self.in_place_index = Arc::new(Mutex::new(0));
                                         self.in_place_index.store(0, Ordering::SeqCst);
@@ -2166,6 +2211,23 @@ inactive_bg = 60,60,60");
                             if self.sync_var.load(Ordering::SeqCst) {
                                 // Access the in place index
                                 let ipi_index: usize = self.in_place_index.load(Ordering::SeqCst) as usize;
+                                // If we add a beat line, also clean all VecDeques past this index to line them up
+                                if self.add_beat_line.load(Ordering::SeqCst) {
+                                    sbl_guard.push_front(1.0);
+                                    sbl_guard.push_front(-1.0);
+                                    self.add_beat_line.store(false, Ordering::SeqCst);
+                                    if self.alt_sync.load(Ordering::SeqCst) && self.params.sync_timing.value() == BeatSync::Beat {
+                                        // This removes extra stuff on the right (jitter)
+                                        guard.drain(ipi_index..);
+                                        aux_guard.drain(ipi_index..);
+                                        aux_guard_2.drain(ipi_index..);
+                                        aux_guard_3.drain(ipi_index..);
+                                        aux_guard_4.drain(ipi_index..);
+                                        aux_guard_5.drain(ipi_index..);
+                                    }
+                                } else {
+                                    sbl_guard.push_front(0.0);
+                                }
                                 // Check if our indexes exists
                                 let main_element: Option<&f32> = guard.get(ipi_index);
                                 let aux_element: Option<&f32> = aux_guard.get(ipi_index);

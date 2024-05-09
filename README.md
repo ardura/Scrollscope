@@ -12,13 +12,21 @@ Note this can take a sidechain input! Do the routing in FL in plugin processing 
 
 
 ## Installation
-VST3: Copy the vst3 file to C:\Program Files\Common Files\VST3
-CLAP: Copy the CLAP file to C:\Program Files\Common Files\CLAP
+
+### Windows
+- VST3: Copy the vst3 file to `C:\Program Files\Common Files\VST3`
+- CLAP: Copy the CLAP file to `C:\Program Files\Common Files\CLAP`
+
+### MacOS
+- VST3: Copy the vst3 file to `/Library/Audio/Plug-Ins/VST3`
+- CLAP: Copy the CLAP file to `/Library/Audio/Plug-Ins/CLAP`
+
+### First Run:
 
 *When this plugin runs the first time it will attempt to create a config file: Scrollscope.ini under:*
-- $XDG_CONFIG_HOME or $HOME/.config on Linux
-- $HOME/Library/Application Support on MacOS
-- FOLDERID_LocalAppData on Windows (like C:\Users\Ardura\AppData\Local\)
+- `$XDG_CONFIG_HOME` or `$HOME/.config` on Linux
+- `$HOME/Library/Application Support` on MacOS
+- `FOLDERID_LocalAppData` on Windows (like `C:\Users\Ardura\AppData\Local\`)
 
 You can use this config to make your own custom color themes, have fun!
 

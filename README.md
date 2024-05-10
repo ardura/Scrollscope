@@ -2,6 +2,10 @@
 
 Available as a VST3 and CLAP. This is an oscilloscope with a few different features I’ve wanted for myself. So I’m sharing that!
 
+Join the discord! https://discord.com/invite/hscQXkTdfz 
+
+Check out the KVR page: https://www.kvraudio.com/product/scrollscope-by-ardura
+
 ## Example
 [![Scrollscope Frequency Analyzer](https://markdown-videos-api.jorgenkh.no/url?url=https%3A%2F%2Fyoutu.be%2Fbsk1fAZlk-k)](https://youtu.be/bsk1fAZlk-k)
 ![analyzer](https://github.com/ardura/Scrollscope/assets/31751444/bb09c85c-c2c0-425a-a1f5-49dc4c025382)

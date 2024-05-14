@@ -65,6 +65,37 @@ Note that with the standalone version, I'm not sure how to setup the aux inputs 
 
 This plugin was made possible thanks to the Nih-Plug Rust Library and the egui GUI library
 
+## How to use
+### Ableton
+1. Add Scrollscope to a track. In this case "Rainstorm" has scrollscope
+
+![image](https://github.com/ardura/Scrollscope/assets/31751444/cee6b7a2-74b6-4fa9-876b-41a01a38d7bf)
+
+2. Press Ctrl+Alt+I to bring up the audio routing options
+3. On "Coffee Leaf" the Audio To is routed to "Rainstorm" then under that you can route the Aux input **You might need to duplicate or send if you still want to send this audio to the master
+
+![image](https://github.com/ardura/Scrollscope/assets/31751444/7db4dce8-b5cf-4724-9623-639473b8b187)
+
+### FL Studio
+1. Add Scrollscope to a mixer track. In this case "808 Kick" has scrollscope
+
+![image](https://github.com/ardura/Scrollscope/assets/31751444/2b8b99f5-8275-410d-a61d-047fbb47c149)
+
+2. On channels you want to send to the aux inputs, select them in the mixer, then right click the arrow on the bottom of the track you want to send to and select sidechain to this track
+
+![image](https://github.com/ardura/Scrollscope/assets/31751444/08959b5c-41f6-4819-a690-b1ef28e74d6b)
+![image](https://github.com/ardura/Scrollscope/assets/31751444/e30a086b-f2bb-4b9f-a593-fba79e0cdab1)
+![image](https://github.com/ardura/Scrollscope/assets/31751444/24032a3e-bd21-4751-8896-8858351ef85d)
+
+3. With the scrollscope window open click the cog at the top, then the plug and cog symbol on the right
+
+![image](https://github.com/ardura/Scrollscope/assets/31751444/a85a809c-ca83-4228-9f55-ab8bd15e7e4f)
+
+4. Go to the processing tab, then at the bottom you can right click on the sidechain inputs to assign them
+
+![image](https://github.com/ardura/Scrollscope/assets/31751444/c115fb1f-3060-41d3-a6d0-e7a2860692cb)
+![image](https://github.com/ardura/Scrollscope/assets/31751444/e5e44a2f-7f0c-4410-b64d-870ce8f593ca)
+
 ## Building
 
 After installing [Rust](https://rustup.rs/), you can compile Scrollscope as follows:

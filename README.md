@@ -96,6 +96,24 @@ This plugin was made possible thanks to the Nih-Plug Rust Library and the egui G
 ![image](https://github.com/ardura/Scrollscope/assets/31751444/c115fb1f-3060-41d3-a6d0-e7a2860692cb)
 ![image](https://github.com/ardura/Scrollscope/assets/31751444/e5e44a2f-7f0c-4410-b64d-870ce8f593ca)
 
+### Ardour
+1. Add scrollscope to a mixer track in Ardour
+
+![image](https://github.com/ardura/Scrollscope/assets/31751444/b5c67d0a-ff09-4b13-906b-23b511eebe5d)
+
+2. Select the input routing, then the enable sidechains to Scrollscope
+
+![image](https://github.com/ardura/Scrollscope/assets/31751444/5a966ab8-56fb-41f4-868d-8156f8a64624)
+
+3. Click on the "-" and route another mixer channel as the sidechain
+
+![image](https://github.com/ardura/Scrollscope/assets/31751444/6e978526-f12b-4daa-9420-2564646f5bf0)
+![image](https://github.com/ardura/Scrollscope/assets/31751444/e3d23570-5b0a-4888-985f-637b489fc741)
+
+4. Repeat for other inputs but it should work at that point
+
+![image](https://github.com/ardura/Scrollscope/assets/31751444/21ab72a2-c9cd-40fe-a43a-60479dbf9852)
+
 ## Building
 
 After installing [Rust](https://rustup.rs/), you can compile Scrollscope as follows:

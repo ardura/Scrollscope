@@ -5,7 +5,7 @@ use nih_plug::{prelude::*};
 use nih_plug_egui::{
     create_egui_editor,
     egui::{
-        self, epaint, plot::{HLine, Line, PlotPoints}, pos2, Align2, Color32, FontId, Pos2, Rect, Response, Rounding, Stroke
+        self, epaint::{self}, plot::{HLine, Line, PlotPoints}, pos2, Align2, Color32, FontId, Pos2, Rect, Response, Rounding, Stroke
     },
     widgets, EguiState,
 };
@@ -69,6 +69,9 @@ pub struct Scrollscope {
     // FFT/Analyzer
     fft: Arc<Mutex<FftPlanner<f32>>>,
     show_analyzer: Arc<AtomicBool>,
+    en_filled_lines: Arc<AtomicBool>,
+
+    en_filled_osc: Arc<AtomicBool>,
 
     sample_rate: Arc<AtomicF32>,
     prev_skip: Arc<AtomicI32>,
@@ -128,6 +131,8 @@ impl Default for Scrollscope {
             beat_threshold: Arc::new(AtomicI32::new(0)),
             fft: Arc::new(Mutex::new(FftPlanner::new())),
             show_analyzer: Arc::new(AtomicBool::new(false)),
+            en_filled_lines: Arc::new(AtomicBool::new(false)),
+            en_filled_osc: Arc::new(AtomicBool::new(false)),
             sample_rate: Arc::new(AtomicF32::new(44100.0)),
             prev_skip: Arc::new(AtomicI32::new(24)),
         }
@@ -228,6 +233,8 @@ impl Plugin for Scrollscope {
         let en_bar_mode = self.enable_bar_mode.clone();
         let fft = self.fft.clone();
         let show_analyzer = self.show_analyzer.clone();
+        let en_filled_lines = self.en_filled_lines.clone();
+        let en_filled_osc = self.en_filled_osc.clone();
         let sample_rate = self.sample_rate.clone();
         let prev_skip = self.prev_skip.clone();
         let mut config = Ini::new();
@@ -423,7 +430,7 @@ inactive_bg = 60,60,60");
                             ui.add(
                                 widgets::ParamSlider::for_param(&params.free_gain, setter)
                                     .with_width(30.0),
-                            );
+                            ).on_hover_text("Visual gain adjustment (no output change)");
                             ui.add_space(4.0);
 
                             let swap_response: Response;
@@ -436,23 +443,23 @@ inactive_bg = 60,60,60");
                                 ui.add_space(4.0);
                                 
                                 swap_response = ui
-                                    .button("Toggle Focus")
+                                    .button("Toggle")
                                     .on_hover_text("Change the drawing order of waveforms");
                             } else {
                                 let _scroll_handle = ui.add(
                                     widgets::ParamSlider::for_param(&params.scrollspeed, setter)
                                         .with_width(50.0),
-                                );
+                                ).on_hover_text("The amount of time the oscilloscope uses to capture data");
     
                                 ui.add_space(4.0);
     
                                 let _scale_handle = ui.add(
                                     widgets::ParamSlider::for_param(&params.h_scale, setter)
                                         .with_width(30.0),
-                                );
+                                ).on_hover_text("How many samples are skipped before reading a value (use this to optimize)");
                                 ui.add_space(4.0);
                                 swap_response = ui
-                                    .button("Toggle Focus")
+                                    .button("Toggle")
                                     .on_hover_text("Change the drawing order of waveforms");
 
                                 let sync_box = slim_checkbox::AtomicSlimCheckbox::new(&sync_var, "Sync");
@@ -469,6 +476,9 @@ inactive_bg = 60,60,60");
 
                                 let dir_box = slim_checkbox::AtomicSlimCheckbox::new(&dir_var, "Flip");
                                 let dir_response = ui.add(dir_box).on_hover_text("Flip direction of oscilloscope");
+
+                                let fill_osc = slim_checkbox::AtomicSlimCheckbox::new(&en_filled_osc, "Fill");
+                                let _fill_response = ui.add(fill_osc).on_hover_text("Fill the oscilloscope drawing");
 
                                 // Reset our line on change
                                 if sync_response.clicked()
@@ -628,6 +638,10 @@ inactive_bg = 60,60,60");
                                 "Analyze",
                             ));
                             if show_analyzer.load(Ordering::SeqCst) {
+                                ui.add(slim_checkbox::AtomicSlimCheckbox::new(
+                                    &en_filled_lines,
+                                    "Filled Lines",
+                                ));
                                 ui.add(slim_checkbox::AtomicSlimCheckbox::new(
                                     &en_guidelines,
                                     "Guidelines",
@@ -1597,52 +1611,574 @@ inactive_bg = 60,60,60");
                                 // Draw whichever order next
                                 match ontop.load(Ordering::SeqCst) {
                                     0 => {
-                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
-                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
-                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
-                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
-                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
-                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                        if en_filled_lines.load(Ordering::SeqCst) {
+                                            if en_aux5.load(Ordering::SeqCst) { 
+                                                for point in ax5_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_5
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux4.load(Ordering::SeqCst) { 
+                                                for point in ax4_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_4
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux3.load(Ordering::SeqCst) { 
+                                                for point in ax3_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_3
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux2.load(Ordering::SeqCst) { 
+                                                for point in ax2_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_2
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux1.load(Ordering::SeqCst) { 
+                                                for point in ax1_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color
+                                                        )
+                                                    );
+                                                }    
+                                            }
+                                            if en_main.load(Ordering::SeqCst) {
+                                                for point in data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_primary_color
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                        } else {
+                                            if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                            if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                            if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                            if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                            if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                            if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                        }
                                     }
                                     1 => {
-                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
-                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
-                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
-                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
-                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
-                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                        if en_filled_lines.load(Ordering::SeqCst) {
+                                            if en_main.load(Ordering::SeqCst) {
+                                                for point in data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_primary_color
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux5.load(Ordering::SeqCst) { 
+                                                for point in ax5_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_5
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux4.load(Ordering::SeqCst) { 
+                                                for point in ax4_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_4
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux3.load(Ordering::SeqCst) { 
+                                                for point in ax3_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_3
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux2.load(Ordering::SeqCst) { 
+                                                for point in ax2_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_2
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux1.load(Ordering::SeqCst) { 
+                                                for point in ax1_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color
+                                                        )
+                                                    );
+                                                }    
+                                            }
+                                        } else {
+                                            if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                            if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                            if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                            if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                            if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                            if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                        }
                                     }
                                     2 => {
-                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
-                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
-                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
-                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
-                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
-                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                        if en_filled_lines.load(Ordering::SeqCst) {
+                                            if en_aux1.load(Ordering::SeqCst) { 
+                                                for point in ax1_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color
+                                                        )
+                                                    );
+                                                }    
+                                            }
+                                            if en_main.load(Ordering::SeqCst) {
+                                                for point in data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_primary_color
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux5.load(Ordering::SeqCst) { 
+                                                for point in ax5_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_5
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux4.load(Ordering::SeqCst) { 
+                                                for point in ax4_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_4
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux3.load(Ordering::SeqCst) { 
+                                                for point in ax3_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_3
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux2.load(Ordering::SeqCst) { 
+                                                for point in ax2_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_2
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                        } else {
+                                            if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                            if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                            if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                            if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                            if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                            if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                        }
                                     }
                                     3 => {
-                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
-                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
-                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
-                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
-                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
-                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                        if en_filled_lines.load(Ordering::SeqCst) {
+                                            if en_aux2.load(Ordering::SeqCst) { 
+                                                for point in ax2_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_2
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux1.load(Ordering::SeqCst) { 
+                                                for point in ax1_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color
+                                                        )
+                                                    );
+                                                }    
+                                            }
+                                            if en_main.load(Ordering::SeqCst) {
+                                                for point in data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_primary_color
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux5.load(Ordering::SeqCst) { 
+                                                for point in ax5_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_5
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux4.load(Ordering::SeqCst) { 
+                                                for point in ax4_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_4
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux3.load(Ordering::SeqCst) { 
+                                                for point in ax3_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_3
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                        } else {
+                                            if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                            if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                            if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                            if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                            if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                            if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                        }
                                     }
                                     4 => {
-                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
-                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
-                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
-                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
-                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
-                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                        if en_filled_lines.load(Ordering::SeqCst) {
+                                            if en_aux3.load(Ordering::SeqCst) { 
+                                                for point in ax3_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_3
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux2.load(Ordering::SeqCst) { 
+                                                for point in ax2_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_2
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux1.load(Ordering::SeqCst) { 
+                                                for point in ax1_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color
+                                                        )
+                                                    );
+                                                }    
+                                            }
+                                            if en_main.load(Ordering::SeqCst) {
+                                                for point in data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_primary_color
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux5.load(Ordering::SeqCst) { 
+                                                for point in ax5_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_5
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux4.load(Ordering::SeqCst) { 
+                                                for point in ax4_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_4
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                        } else {
+                                            if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                            if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                            if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                            if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                            if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                            if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                        }
                                     }
                                     5 => {
-                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
-                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
-                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
-                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
-                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
-                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                        if en_filled_lines.load(Ordering::SeqCst) {
+                                            if en_aux4.load(Ordering::SeqCst) { 
+                                                for point in ax4_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_4
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux3.load(Ordering::SeqCst) { 
+                                                for point in ax3_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_3
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux2.load(Ordering::SeqCst) { 
+                                                for point in ax2_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_2
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                            if en_aux1.load(Ordering::SeqCst) { 
+                                                for point in ax1_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color
+                                                        )
+                                                    );
+                                                }    
+                                            }
+                                            if en_main.load(Ordering::SeqCst) {
+                                                for point in data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_primary_color
+                                                        )
+                                                    );
+                                                }
+                                            }
+                                            if en_aux5.load(Ordering::SeqCst) { 
+                                                for point in ax5_data.iter() {
+                                                    shapes.push(
+                                                        epaint::Shape::rect_filled(
+                                                            Rect { 
+                                                                min: Pos2::new(point.x, point.y), 
+                                                                max: Pos2::new(point.x + 0.5, 500.0)
+                                                            },
+                                                            Rounding::none(),
+                                                            final_aux_line_color_5
+                                                        )
+                                                    );
+                                                }  
+                                            }
+                                        } else {
+                                            if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                            if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                            if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                            if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                            if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                            if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                        }
                                     }
                                     _ => {
                                         // We shouldn't be here
@@ -1652,28 +2188,6 @@ inactive_bg = 60,60,60");
                                 ui.painter().extend(shapes);
                             }
                         } else {
-                            /*
-                            if alt_sync.load(Ordering::SeqCst) {
-                                while samples.back().map_or(false, |&x| x == 0.0) {
-                                    samples.pop_back();
-                                }
-                                while aux_samples_1.back().map_or(false, |&x| x == 0.0) {
-                                    aux_samples_1.pop_back();
-                                }
-                                while aux_samples_2.back().map_or(false, |&x| x == 0.0) {
-                                    aux_samples_2.pop_back();
-                                }
-                                while aux_samples_3.back().map_or(false, |&x| x == 0.0) {
-                                    aux_samples_3.pop_back();
-                                }
-                                while aux_samples_4.back().map_or(false, |&x| x == 0.0) {
-                                    aux_samples_4.pop_back();
-                                }
-                                while aux_samples_5.back().map_or(false, |&x| x == 0.0) {
-                                    aux_samples_5.pop_back();
-                                }
-                            }
-                            */
                             let mut sum_data = samples.clone();
 
                             let sbl: PlotPoints = scrolling_beat_lines
@@ -1856,131 +2370,282 @@ inactive_bg = 60,60,60");
 
                                     if en_sum.load(Ordering::SeqCst) {
                                         // Draw the sum line first so it's furthest behind
-                                        plot_ui.line(sum_line);
+                                        if en_filled_osc.load(Ordering::SeqCst) {
+                                            plot_ui.line(sum_line.fill(0.0));
+                                        } else {
+                                            plot_ui.line(sum_line);
+                                        }
                                     }
 
                                     // Figure out the lines to draw
+
+                                    // Get our fill for this sequence
+                                    let fill = en_filled_osc.load(Ordering::SeqCst);
 
                                     // Draw whichever order next
                                     match ontop.load(Ordering::SeqCst) {
                                         0 => {
                                             if en_aux5.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_5);
+                                                if fill {
+                                                    plot_ui.line(aux_line_5.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_5);
+                                                }
                                             }
                                             if en_aux4.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_4);
+                                                if fill {
+                                                    plot_ui.line(aux_line_4.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_4);
+                                                }
                                             }
                                             if en_aux3.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_3);
+                                                if fill {
+                                                    plot_ui.line(aux_line_3.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_3);
+                                                }
                                             }
                                             if en_aux2.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_2);
+                                                if fill {
+                                                    plot_ui.line(aux_line_2.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_2);
+                                                }
                                             }
                                             if en_aux1.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line);
+                                                if fill {
+                                                    plot_ui.line(aux_line.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line);
+                                                }
                                             }
                                             if en_main.load(Ordering::SeqCst) {
-                                                plot_ui.line(line);
+                                                if fill {
+                                                    plot_ui.line(line.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(line);
+                                                }
                                             }
                                         }
                                         1 => {
                                             if en_main.load(Ordering::SeqCst) {
-                                                plot_ui.line(line);
+                                                if fill {
+                                                    plot_ui.line(line.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(line);
+                                                }
                                             }
                                             if en_aux5.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_5);
+                                                if fill {
+                                                    plot_ui.line(aux_line_5.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_5);
+                                                }
                                             }
                                             if en_aux4.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_4);
+                                                if fill {
+                                                    plot_ui.line(aux_line_4.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_4);
+                                                }
                                             }
                                             if en_aux3.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_3);
+                                                if fill {
+                                                    plot_ui.line(aux_line_3.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_3);
+                                                }
                                             }
                                             if en_aux2.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_2);
+                                                if fill {
+                                                    plot_ui.line(aux_line_2.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_2);
+                                                }
                                             }
                                             if en_aux1.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line);
+                                                if fill {
+                                                    plot_ui.line(aux_line.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line);
+                                                }
                                             }
                                         }
                                         2 => {
                                             if en_aux1.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line);
+                                                if fill {
+                                                    plot_ui.line(aux_line.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line);
+                                                }
                                             }
                                             if en_main.load(Ordering::SeqCst) {
-                                                plot_ui.line(line);
+                                                if fill {
+                                                    plot_ui.line(line.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(line);
+                                                }
                                             }
                                             if en_aux5.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_5);
+                                                if fill {
+                                                    plot_ui.line(aux_line_5.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_5);
+                                                }
                                             }
                                             if en_aux4.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_4);
+                                                if fill {
+                                                    plot_ui.line(aux_line_4.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_4);
+                                                }
                                             }
                                             if en_aux3.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_3);
+                                                if fill {
+                                                    plot_ui.line(aux_line_3.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_3);
+                                                }
                                             }
                                             if en_aux2.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_2);
+                                                if fill {
+                                                    plot_ui.line(aux_line_2.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_2);
+                                                }
                                             }
                                         }
                                         3 => {
                                             if en_aux2.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_2);
+                                                if fill {
+                                                    plot_ui.line(aux_line_2.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_2);
+                                                }
                                             }
                                             if en_aux1.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line);
+                                                if fill {
+                                                    plot_ui.line(aux_line.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line);
+                                                }
                                             }
                                             if en_main.load(Ordering::SeqCst) {
-                                                plot_ui.line(line);
+                                                if fill {
+                                                    plot_ui.line(line.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(line);
+                                                }
                                             }
                                             if en_aux5.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_5);
+                                                if fill {
+                                                    plot_ui.line(aux_line_5.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_5);
+                                                }
                                             }
                                             if en_aux4.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_4);
+                                                if fill {
+                                                    plot_ui.line(aux_line_4.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_4);
+                                                }
                                             }
                                             if en_aux3.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_3);
+                                                if fill {
+                                                    plot_ui.line(aux_line_3.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_3);
+                                                }
                                             }
                                         }
                                         4 => {
                                             if en_aux3.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_3);
+                                                if fill {
+                                                    plot_ui.line(aux_line_3.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_3);
+                                                }
                                             }
                                             if en_aux2.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_2);
+                                                if fill {
+                                                    plot_ui.line(aux_line_2.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_2);
+                                                }
                                             }
                                             if en_aux1.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line);
+                                                if fill {
+                                                    plot_ui.line(aux_line.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line);
+                                                }
                                             }
                                             if en_main.load(Ordering::SeqCst) {
-                                                plot_ui.line(line);
+                                                if fill {
+                                                    plot_ui.line(line.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(line);
+                                                }
                                             }
                                             if en_aux5.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_5);
+                                                if fill {
+                                                    plot_ui.line(aux_line_5.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_5);
+                                                }
                                             }
                                             if en_aux4.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_4);
+                                                if fill {
+                                                    plot_ui.line(aux_line_4.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_4);
+                                                }
                                             }
                                         }
                                         5 => {
                                             if en_aux4.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_4);
+                                                if fill {
+                                                    plot_ui.line(aux_line_4.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_4);
+                                                }
                                             }
                                             if en_aux3.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_3);
+                                                if fill {
+                                                    plot_ui.line(aux_line_3.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_3);
+                                                }
                                             }
                                             if en_aux2.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_2);
+                                                if fill {
+                                                    plot_ui.line(aux_line_2.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_2);
+                                                }
                                             }
                                             if en_aux1.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line);
+                                                if fill {
+                                                    plot_ui.line(aux_line.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line);
+                                                }
                                             }
                                             if en_main.load(Ordering::SeqCst) {
-                                                plot_ui.line(line);
+                                                if fill {
+                                                    plot_ui.line(line.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(line);
+                                                }
                                             }
                                             if en_aux5.load(Ordering::SeqCst) {
-                                                plot_ui.line(aux_line_5);
+                                                if fill {
+                                                    plot_ui.line(aux_line_5.fill(0.0));
+                                                } else {
+                                                    plot_ui.line(aux_line_5);
+                                                }
                                             }
                                         }
                                         _ => {

@@ -16,7 +16,7 @@ use std::{collections::VecDeque, ops::RangeInclusive, sync::Mutex};
 mod slim_checkbox;
 
 /**************************************************
- * Scrollscope v1.3.2 by Ardura
+ * Scrollscope v1.4.0 by Ardura
  * "A simple scrolling Oscilloscope has become complex now"
  *
  * Build with: cargo xtask bundle scrollscope --profile release

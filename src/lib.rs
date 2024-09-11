@@ -5,18 +5,18 @@ use nih_plug::{prelude::*};
 use nih_plug_egui::{
     create_egui_editor,
     egui::{
-        self, epaint::{self}, plot::{HLine, Line, PlotPoints}, pos2, Align2, Color32, FontId, Pos2, Rect, Response, Rounding, Stroke
+        self, epaint::{self}, plot::{HLine, Line, PlotPoints}, pos2, Align2, Color32, FontId, Layout, Pos2, Rect, Response, Rounding, Stroke
     },
     widgets, EguiState,
 };
-use rustfft::{num_complex::Complex, FftDirection, FftPlanner};
+use rustfft::{num_complex::Complex, Fft, FftDirection, FftPlanner};
 use std::{env, fs::File, io::Write, path::MAIN_SEPARATOR_STR, str::FromStr, sync::{atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering}, Arc}};
 use std::{collections::VecDeque, ops::RangeInclusive, sync::Mutex};
 
 mod slim_checkbox;
 
 /**************************************************
- * Scrollscope v1.4.0 by Ardura
+ * Scrollscope v1.4.1 by Ardura
  * "A simple scrolling Oscilloscope has become complex now"
  *
  * Build with: cargo xtask bundle scrollscope --profile release
@@ -36,7 +36,7 @@ pub struct Scrollscope {
     params: Arc<ScrollscopeParams>,
 
     // Counter for scaling sample skipping
-    skip_counter: i32,
+    skip_counter: Arc<AtomicI32>,
     focused_line_toggle: Arc<AtomicU8>,
     is_clipping: Arc<AtomicF32>,
     direction: Arc<AtomicBool>,
@@ -59,6 +59,14 @@ pub struct Scrollscope {
     aux_samples_5: Arc<Mutex<VecDeque<f32>>>,
     scrolling_beat_lines: Arc<Mutex<VecDeque<f32>>>,
 
+    // Stereo field uses this second set
+    samples_2: Arc<Mutex<VecDeque<f32>>>,
+    aux_samples_1_2: Arc<Mutex<VecDeque<f32>>>,
+    aux_samples_2_2: Arc<Mutex<VecDeque<f32>>>,
+    aux_samples_3_2: Arc<Mutex<VecDeque<f32>>>,
+    aux_samples_4_2: Arc<Mutex<VecDeque<f32>>>,
+    aux_samples_5_2: Arc<Mutex<VecDeque<f32>>>,
+
     // Syncing for beats
     sync_var: Arc<AtomicBool>,
     alt_sync: Arc<AtomicBool>,
@@ -72,6 +80,9 @@ pub struct Scrollscope {
     en_filled_lines: Arc<AtomicBool>,
 
     en_filled_osc: Arc<AtomicBool>,
+
+    // Stereo view
+    stereo_view: Arc<AtomicBool>,
 
     sample_rate: Arc<AtomicF32>,
     prev_skip: Arc<AtomicI32>,
@@ -104,7 +115,7 @@ impl Default for Scrollscope {
     fn default() -> Self {
         Self {
             params: Arc::new(ScrollscopeParams::default()),
-            skip_counter: 0,
+            skip_counter: Arc::new(AtomicI32::new(0)),
             focused_line_toggle: Arc::new(AtomicU8::new(0)),
             direction: Arc::new(AtomicBool::new(false)),
             is_clipping: Arc::new(AtomicF32::new(0.0)),
@@ -123,6 +134,12 @@ impl Default for Scrollscope {
             aux_samples_3: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             aux_samples_4: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             aux_samples_5: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
+            samples_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
+            aux_samples_1_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
+            aux_samples_2_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
+            aux_samples_3_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
+            aux_samples_4_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
+            aux_samples_5_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             scrolling_beat_lines: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
             sync_var: Arc::new(AtomicBool::new(false)),
             alt_sync: Arc::new(AtomicBool::new(false)),
@@ -133,6 +150,7 @@ impl Default for Scrollscope {
             show_analyzer: Arc::new(AtomicBool::new(false)),
             en_filled_lines: Arc::new(AtomicBool::new(false)),
             en_filled_osc: Arc::new(AtomicBool::new(false)),
+            stereo_view: Arc::new(AtomicBool::new(false)),
             sample_rate: Arc::new(AtomicF32::new(44100.0)),
             prev_skip: Arc::new(AtomicI32::new(24)),
         }
@@ -216,6 +234,12 @@ impl Plugin for Scrollscope {
         let aux_samples_3 = self.aux_samples_3.clone();
         let aux_samples_4 = self.aux_samples_4.clone();
         let aux_samples_5 = self.aux_samples_5.clone();
+        let samples_2 = self.samples_2.clone();
+        let aux_samples_1_2 = self.aux_samples_1_2.clone();
+        let aux_samples_2_2 = self.aux_samples_2_2.clone();
+        let aux_samples_3_2 = self.aux_samples_3_2.clone();
+        let aux_samples_4_2 = self.aux_samples_4_2.clone();
+        let aux_samples_5_2 = self.aux_samples_5_2.clone();
         let scrolling_beat_lines = self.scrolling_beat_lines.clone();
         let ontop = self.focused_line_toggle.clone();
         let is_clipping = self.is_clipping.clone();
@@ -235,6 +259,7 @@ impl Plugin for Scrollscope {
         let show_analyzer = self.show_analyzer.clone();
         let en_filled_lines = self.en_filled_lines.clone();
         let en_filled_osc = self.en_filled_osc.clone();
+        let stereo_view = self.stereo_view.clone();
         let sample_rate = self.sample_rate.clone();
         let prev_skip = self.prev_skip.clone();
         let mut config = Ini::new();
@@ -410,14 +435,31 @@ inactive_bg = 60,60,60");
                     let mut aux_line_3: Line = Line::new(PlotPoints::default());
                     let mut aux_line_4: Line = Line::new(PlotPoints::default());
                     let mut aux_line_5: Line = Line::new(PlotPoints::default());
+                    let mut sum_line_2: Line = Line::new(PlotPoints::default());
+                    #[allow(non_snake_case)]
+                    let mut aux_line__2: Line = Line::new(PlotPoints::default());
+                    let mut aux_line_2_2: Line = Line::new(PlotPoints::default());
+                    let mut aux_line_3_2: Line = Line::new(PlotPoints::default());
+                    let mut aux_line_4_2: Line = Line::new(PlotPoints::default());
+                    let mut aux_line_5_2: Line = Line::new(PlotPoints::default());
                     let mut scrolling_beat_line: Line = Line::new(PlotPoints::default());
                     let mut line: Line = Line::new(PlotPoints::default());
+                    let mut line_2: Line = Line::new(PlotPoints::default());
+                    // Channel 1
                     let mut samples = samples.lock().unwrap();
                     let mut aux_samples_1 = aux_samples_1.lock().unwrap();
                     let mut aux_samples_2 = aux_samples_2.lock().unwrap();
                     let mut aux_samples_3 = aux_samples_3.lock().unwrap();
                     let mut aux_samples_4 = aux_samples_4.lock().unwrap();
                     let mut aux_samples_5 = aux_samples_5.lock().unwrap();
+                    // Channel 2
+                    let mut samples_2 = samples_2.lock().unwrap();
+                    let mut aux_samples_1_2 = aux_samples_1_2.lock().unwrap();
+                    let mut aux_samples_2_2 = aux_samples_2_2.lock().unwrap();
+                    let mut aux_samples_3_2 = aux_samples_3_2.lock().unwrap();
+                    let mut aux_samples_4_2 = aux_samples_4_2.lock().unwrap();
+                    let mut aux_samples_5_2 = aux_samples_5_2.lock().unwrap();
+                    // Lines
                     let mut scrolling_beat_lines = scrolling_beat_lines.lock().unwrap();
                     let sr = sample_rate.clone();
 
@@ -426,7 +468,8 @@ inactive_bg = 60,60,60");
                         // This is the top bar
                         ui.horizontal(|ui| {
                             ui.label("Scrollscope")
-                                .on_hover_text("by Ardura with nih-plug and egui");
+                                .on_hover_text("by Ardura with nih-plug and egui
+Version 1.4.1");
                             ui.add(
                                 widgets::ParamSlider::for_param(&params.free_gain, setter)
                                     .with_width(30.0),
@@ -505,12 +548,26 @@ inactive_bg = 60,60,60");
                                     aux_line_5 = Line::new(PlotPoints::default());
                                     scrolling_beat_line = Line::new(PlotPoints::default());
                                     line = Line::new(PlotPoints::default());
+                                    sum_line_2 = Line::new(PlotPoints::default());
+                                    aux_line__2 = Line::new(PlotPoints::default());
+                                    aux_line_2_2 = Line::new(PlotPoints::default());
+                                    aux_line_3_2 = Line::new(PlotPoints::default());
+                                    aux_line_4_2 = Line::new(PlotPoints::default());
+                                    aux_line_5_2 = Line::new(PlotPoints::default());
+                                    //scrolling_beat_line = Line::new(PlotPoints::default());
+                                    line_2 = Line::new(PlotPoints::default());
                                     samples.clear();
                                     aux_samples_1.clear();
                                     aux_samples_2.clear();
                                     aux_samples_3.clear();
                                     aux_samples_4.clear();
                                     aux_samples_5.clear();
+                                    samples_2.clear();
+                                    aux_samples_1_2.clear();
+                                    aux_samples_2_2.clear();
+                                    aux_samples_3_2.clear();
+                                    aux_samples_4_2.clear();
+                                    aux_samples_5_2.clear();
                                     scrolling_beat_lines.clear();
                                 }
                             }
@@ -667,12 +724,21 @@ inactive_bg = 60,60,60");
 
                     // Reverse our order for drawing if desired (I know this is "slow")
                     if dir_var.load(Ordering::SeqCst) {
+                        // Channel 1
                         samples.make_contiguous().reverse();
                         aux_samples_1.make_contiguous().reverse();
                         aux_samples_2.make_contiguous().reverse();
                         aux_samples_3.make_contiguous().reverse();
                         aux_samples_4.make_contiguous().reverse();
                         aux_samples_5.make_contiguous().reverse();
+                        // Channel 2
+                        samples_2.make_contiguous().reverse();
+                        aux_samples_1_2.make_contiguous().reverse();
+                        aux_samples_2_2.make_contiguous().reverse();
+                        aux_samples_3_2.make_contiguous().reverse();
+                        aux_samples_4_2.make_contiguous().reverse();
+                        aux_samples_5_2.make_contiguous().reverse();
+                        // Lines
                         scrolling_beat_lines.make_contiguous().reverse();
                     }
 
@@ -748,80 +814,92 @@ inactive_bg = 60,60,60");
 
                         // Show the frequency analyzer
                         if show_analyzer.load(Ordering::SeqCst) {
-                            let mut shapes = vec![];
+                            let mut shapes: Vec<egui::Shape> = vec![];
+
+                            let testme = samples.get(0);
+                            if testme.is_none() {
+                                nih_error!("samples doesn't have values");
+                            }
+
+                            let input_vd: VecDeque<f32> = add_vecdeques(&samples, &samples_2);
+                            let ax_vd: VecDeque<f32> = add_vecdeques(&aux_samples_1, &aux_samples_1_2);
+                            let ax_vd2: VecDeque<f32> = add_vecdeques(&aux_samples_2, &aux_samples_2_2);
+                            let ax_vd3: VecDeque<f32> = add_vecdeques(&aux_samples_3, &aux_samples_3_2);
+                            let ax_vd4: VecDeque<f32> = add_vecdeques(&aux_samples_4, &aux_samples_4_2);
+                            let ax_vd5: VecDeque<f32> = add_vecdeques(&aux_samples_5, &aux_samples_5_2);
 
                             // Compute our fast fourier transforms
-                            let mut buffer: Vec<Complex<f32>> = samples.iter().map(|&x| Complex::new(x, 0.0)).collect();
+                            let mut buffer: Vec<Complex<f32>> = input_vd.iter().map(|&x| Complex::new(flush_denormal(x), 0.0)).collect();
                             let buffer_len: usize = buffer.len();
-                            let fft_plan = fft.lock().unwrap().plan_fft(buffer_len, FftDirection::Forward);
+                            let fft_plan: Arc<dyn Fft<f32>> = fft.lock().unwrap().plan_fft(buffer_len, FftDirection::Forward);
                             fft_plan.process(&mut buffer);
 
-                            let mut ax1: Vec<Complex<f32>> = aux_samples_1.iter().map(|&x| Complex::new(x, 0.0)).collect();
+                            let mut ax1: Vec<Complex<f32>> = ax_vd.iter().map(|&x| Complex::new(flush_denormal(x), 0.0)).collect();
                             let ax1_len: usize = ax1.len();
-                            let fft_plan = fft.lock().unwrap().plan_fft(ax1_len, FftDirection::Forward);
+                            let fft_plan: Arc<dyn Fft<f32>> = fft.lock().unwrap().plan_fft(ax1_len, FftDirection::Forward);
                             fft_plan.process(&mut ax1);
 
-                            let mut ax2: Vec<Complex<f32>> = aux_samples_2.iter().map(|&x| Complex::new(x, 0.0)).collect();
+                            let mut ax2: Vec<Complex<f32>> = ax_vd2.iter().map(|&x| Complex::new(flush_denormal(x), 0.0)).collect();
                             let ax2_len: usize = ax2.len();
-                            let fft_plan = fft.lock().unwrap().plan_fft(ax2_len, FftDirection::Forward);
+                            let fft_plan: Arc<dyn Fft<f32>> = fft.lock().unwrap().plan_fft(ax2_len, FftDirection::Forward);
                             fft_plan.process(&mut ax2);
 
-                            let mut ax3: Vec<Complex<f32>> = aux_samples_3.iter().map(|&x| Complex::new(x, 0.0)).collect();
+                            let mut ax3: Vec<Complex<f32>> = ax_vd3.iter().map(|&x| Complex::new(flush_denormal(x), 0.0)).collect();
                             let ax3_len: usize = ax3.len();
-                            let fft_plan = fft.lock().unwrap().plan_fft(ax3_len, FftDirection::Forward);
+                            let fft_plan: Arc<dyn Fft<f32>> = fft.lock().unwrap().plan_fft(ax3_len, FftDirection::Forward);
                             fft_plan.process(&mut ax3);
 
-                            let mut ax4: Vec<Complex<f32>> = aux_samples_4.iter().map(|&x| Complex::new(x, 0.0)).collect();
+                            let mut ax4: Vec<Complex<f32>> = ax_vd4.iter().map(|&x| Complex::new(flush_denormal(x), 0.0)).collect();
                             let ax4_len: usize = ax4.len();
-                            let fft_plan = fft.lock().unwrap().plan_fft(ax4_len, FftDirection::Forward);
+                            let fft_plan: Arc<dyn Fft<f32>> = fft.lock().unwrap().plan_fft(ax4_len, FftDirection::Forward);
                             fft_plan.process(&mut ax4);
 
-                            let mut ax5: Vec<Complex<f32>> = aux_samples_5.iter().map(|&x| Complex::new(x, 0.0)).collect();
+                            let mut ax5: Vec<Complex<f32>> = ax_vd5.iter().map(|&x| Complex::new(flush_denormal(x), 0.0)).collect();
                             let ax5_len: usize = ax5.len();
-                            let fft_plan = fft.lock().unwrap().plan_fft(ax5_len, FftDirection::Forward);
+                            let fft_plan: Arc<dyn Fft<f32>> = fft.lock().unwrap().plan_fft(ax5_len, FftDirection::Forward);
                             fft_plan.process(&mut ax5);
 
                             // Compute
                             let magnitudes: Vec<f32> = buffer.iter().map(|c| c.norm() as f32).collect();
                             let frequencies: Vec<f32> = (0..buffer_len / 2)
-                                .map(|i| i as f32 * sr.load(Ordering::Relaxed) / buffer_len as f32)
+                                .map(|i| i as f32 * sr.load(Ordering::SeqCst) / buffer_len as f32)
                                 .collect();
                             let magnitudes_ax1: Vec<f32> = ax1.iter().map(|c| c.norm() as f32).collect();
                             let frequencies_ax1: Vec<f32> = (0..ax1_len / 2)
-                                .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax1_len as f32)
+                                .map(|i| i as f32 * sr.load(Ordering::SeqCst) / ax1_len as f32)
                                 .collect();
                             let magnitudes_ax2: Vec<f32> = ax2.iter().map(|c| c.norm() as f32).collect();
                             let frequencies_ax2: Vec<f32> = (0..ax2_len / 2)
-                                .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax2_len as f32)
+                                .map(|i| i as f32 * sr.load(Ordering::SeqCst) / ax2_len as f32)
                                 .collect();
                             let magnitudes_ax3: Vec<f32> = ax3.iter().map(|c| c.norm() as f32).collect();
                             let frequencies_ax3: Vec<f32> = (0..ax3_len / 2)
-                                .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax3_len as f32)
+                                .map(|i| i as f32 * sr.load(Ordering::SeqCst) / ax3_len as f32)
                                 .collect();
                             let magnitudes_ax4: Vec<f32> = ax4.iter().map(|c| c.norm() as f32).collect();
                             let frequencies_ax4: Vec<f32> = (0..ax4_len / 2)
-                                .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax4_len as f32)
+                                .map(|i| i as f32 * sr.load(Ordering::SeqCst) / ax4_len as f32)
                                 .collect();
                             let magnitudes_ax5: Vec<f32> = ax5.iter().map(|c| c.norm() as f32).collect();
                             let frequencies_ax5: Vec<f32> = (0..ax5_len / 2)
-                                .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax5_len as f32)
+                                .map(|i| i as f32 * sr.load(Ordering::SeqCst) / ax5_len as f32)
                                 .collect();
                             // Scale for visibility
-                            let db_scaler = 2.75;
-                            let freq_scaler = 285.0;
-                            let x_shift = -220.0;
-                            let y_shift = 220.0;
+                            let db_scaler: f32 = 2.75;
+                            let freq_scaler: f32 = 285.0;
+                            let x_shift: f32 = -220.0;
+                            let y_shift: f32 = 220.0;
                             // 1Khz pivot and -4.5 slope is same as Fruity Parametric EQ2
                             // For some reason 12 lines up the same here...
-                            let pivot = 1000.0;
-                            let slope = 12.0;
+                            let pivot: f32 = 1000.0;
+                            let slope: f32 = 12.0;
 
                             if en_bar_mode.load(Ordering::SeqCst) {
                                 let length = frequencies.len();
                                 //let bar_scaler = 300.0;
-                                let bar_scaler = 1.6;
+                                let bar_scaler: f32 = 1.6;
                                 let bars: f32 = 64.0;
-                                let chunk_size = length as f32 / bars;
+                                let chunk_size: f32 = length as f32 / bars;
                                 let mut chunked_f: Vec<f32> = Vec::with_capacity(bars as usize);
                                 let mut chunked_m: Vec<f32> = Vec::with_capacity(bars as usize);
                                 let mut chunked_f_ax1: Vec<f32> = Vec::with_capacity(bars as usize);
@@ -2189,6 +2267,7 @@ inactive_bg = 60,60,60");
                             }
                         } else {
                             let mut sum_data = samples.clone();
+                            let mut sum_data_2 = samples_2.clone();
 
                             let sbl: PlotPoints = scrolling_beat_lines
                                 .iter()
@@ -2201,6 +2280,15 @@ inactive_bg = 60,60,60");
                                 .color(guidelines)
                                 .stroke(Stroke::new(0.25, guidelines.linear_multiply(0.5)));
 
+                            let offset_osc_view;
+                            if stereo_view.load(Ordering::SeqCst) {
+                                offset_osc_view = 1.0;
+                            } else {
+                                offset_osc_view = 0.0;
+                            }
+
+                            // CHANNEL 0
+                            /////////////////////////////////////////////////////////////////////////////////////////
                             // Primary Input
                             let data: PlotPoints = samples
                                 .iter()
@@ -2210,7 +2298,7 @@ inactive_bg = 60,60,60");
                                     let y: f64;
                                     if en_main.load(Ordering::SeqCst) {
                                         x = i as f64;
-                                        y = *sample as f64;
+                                        y = *sample as f64 + offset_osc_view;
                                     } else {
                                         x = i as f64;
                                         y = 0.0;
@@ -2231,7 +2319,7 @@ inactive_bg = 60,60,60");
                                     let y: f64;
                                     if en_aux1.load(Ordering::SeqCst) {
                                         x = i as f64;
-                                        y = *sample as f64;
+                                        y = *sample as f64 + offset_osc_view;
                                         let sum_temp = sum_data.get_mut(i).unwrap();
                                         *sum_temp += *sample;
                                     } else {
@@ -2253,7 +2341,7 @@ inactive_bg = 60,60,60");
                                     let y: f64;
                                     if en_aux2.load(Ordering::SeqCst) {
                                         x = i as f64;
-                                        y = *sample as f64;
+                                        y = *sample as f64 + offset_osc_view;
                                         let sum_temp = sum_data.get_mut(i).unwrap();
                                         *sum_temp += *sample;
                                     } else {
@@ -2275,7 +2363,7 @@ inactive_bg = 60,60,60");
                                     let y: f64;
                                     if en_aux3.load(Ordering::SeqCst) {
                                         x = i as f64;
-                                        y = *sample as f64;
+                                        y = *sample as f64 + offset_osc_view;
                                         let sum_temp = sum_data.get_mut(i).unwrap();
                                         *sum_temp += *sample;
                                     } else {
@@ -2297,7 +2385,7 @@ inactive_bg = 60,60,60");
                                     let y: f64;
                                     if en_aux4.load(Ordering::SeqCst) {
                                         x = i as f64;
-                                        y = *sample as f64;
+                                        y = *sample as f64 + offset_osc_view;
                                         let sum_temp = sum_data.get_mut(i).unwrap();
                                         *sum_temp += *sample;
                                     } else {
@@ -2319,7 +2407,7 @@ inactive_bg = 60,60,60");
                                     let y: f64;
                                     if en_aux5.load(Ordering::SeqCst) {
                                         x = i as f64;
-                                        y = *sample as f64;
+                                        y = *sample as f64 + offset_osc_view;
                                         let sum_temp = sum_data.get_mut(i).unwrap();
                                         *sum_temp += *sample;
                                     } else {
@@ -2340,11 +2428,162 @@ inactive_bg = 60,60,60");
                                     .enumerate()
                                     .map(|(i, sample)| {
                                         let x = i as f64;
-                                        let y = *sample as f64;
+                                        let y = *sample as f64 + offset_osc_view;
                                         [x, y]
                                     })
                                     .collect();
                                 sum_line = Line::new(sum_plotpoints)
+                                    .color(user_sum_line.linear_multiply(0.25))
+                                    .stroke(Stroke::new(0.9, user_sum_line));
+                            }
+
+                            // CHANNEL 1
+                            /////////////////////////////////////////////////////////////////////////////////////////
+                            // Primary Input
+                            let data_2: PlotPoints = samples_2
+                                .iter()
+                                .enumerate()
+                                .map(|(i, sample)| {
+                                    let x: f64;
+                                    let y: f64;
+                                    if en_main.load(Ordering::SeqCst) {
+                                        x = i as f64;
+                                        y = *sample as f64 - offset_osc_view;
+                                    } else {
+                                        x = i as f64;
+                                        y = 0.0;
+                                    }
+                                    [x, y]
+                                })
+                                .collect();
+                            line_2 = Line::new(data_2)
+                                .color(primary_line_color)
+                                .stroke(Stroke::new(1.1, primary_line_color));
+
+                            // Aux inputs
+                            #[allow(non_snake_case)]
+                            let aux_data__2: PlotPoints = aux_samples_1_2
+                                .iter()
+                                .enumerate()
+                                .map(|(i, sample)| {
+                                    let x: f64;
+                                    let y: f64;
+                                    if en_aux1.load(Ordering::SeqCst) {
+                                        x = i as f64;
+                                        y = *sample as f64 - offset_osc_view;
+                                        let sum_temp = sum_data_2.get_mut(i).unwrap();
+                                        *sum_temp += *sample;
+                                    } else {
+                                        x = i as f64;
+                                        y = 0.0;
+                                    }
+                                    [x, y]
+                                })
+                                .collect();
+                            aux_line__2 = Line::new(aux_data__2)
+                                .color(user_aux_1)
+                                .stroke(Stroke::new(1.0, user_aux_1));
+
+                            let aux_data_2_2: PlotPoints = aux_samples_2_2
+                                .iter()
+                                .enumerate()
+                                .map(|(i, sample)| {
+                                    let x: f64;
+                                    let y: f64;
+                                    if en_aux2.load(Ordering::SeqCst) {
+                                        x = i as f64;
+                                        y = *sample as f64 - offset_osc_view;
+                                        let sum_temp = sum_data_2.get_mut(i).unwrap();
+                                        *sum_temp += *sample;
+                                    } else {
+                                        x = i as f64;
+                                        y = 0.0;
+                                    }
+                                    [x, y]
+                                })
+                                .collect();
+                            aux_line_2_2 = Line::new(aux_data_2_2)
+                                .color(user_aux_2)
+                                .stroke(Stroke::new(1.0, user_aux_2));
+
+                            let aux_data_3_2: PlotPoints = aux_samples_3_2
+                                .iter()
+                                .enumerate()
+                                .map(|(i, sample)| {
+                                    let x: f64;
+                                    let y: f64;
+                                    if en_aux3.load(Ordering::SeqCst) {
+                                        x = i as f64;
+                                        y = *sample as f64 - offset_osc_view;
+                                        let sum_temp = sum_data_2.get_mut(i).unwrap();
+                                        *sum_temp += *sample;
+                                    } else {
+                                        x = i as f64;
+                                        y = 0.0;
+                                    }
+                                    [x, y]
+                                })
+                                .collect();
+                            aux_line_3_2 = Line::new(aux_data_3_2)
+                                .color(user_aux_3)
+                                .stroke(Stroke::new(1.0, user_aux_3));
+
+                            let aux_data_4_2: PlotPoints = aux_samples_4_2
+                                .iter()
+                                .enumerate()
+                                .map(|(i, sample)| {
+                                    let x: f64;
+                                    let y: f64;
+                                    if en_aux4.load(Ordering::SeqCst) {
+                                        x = i as f64;
+                                        y = *sample as f64 - offset_osc_view;
+                                        let sum_temp = sum_data_2.get_mut(i).unwrap();
+                                        *sum_temp += *sample;
+                                    } else {
+                                        x = i as f64;
+                                        y = 0.0;
+                                    }
+                                    [x, y]
+                                })
+                                .collect();
+                            aux_line_4_2 = Line::new(aux_data_4_2)
+                                .color(user_aux_4)
+                                .stroke(Stroke::new(1.0, user_aux_4));
+
+                            let aux_data_5_2: PlotPoints = aux_samples_5_2
+                                .iter()
+                                .enumerate()
+                                .map(|(i, sample)| {
+                                    let x: f64;
+                                    let y: f64;
+                                    if en_aux5.load(Ordering::SeqCst) {
+                                        x = i as f64;
+                                        y = *sample as f64 - offset_osc_view;
+                                        let sum_temp = sum_data_2.get_mut(i).unwrap();
+                                        *sum_temp += *sample;
+                                    } else {
+                                        x = i as f64;
+                                        y = 0.0;
+                                    }
+                                    [x, y]
+                                })
+                                .collect();
+                            aux_line_5_2 = Line::new(aux_data_5_2)
+                                .color(user_aux_5)
+                                .stroke(Stroke::new(1.0, user_aux_5));
+
+                            if en_sum.load(Ordering::SeqCst) {
+                                // Summed audio line
+                                let sum_plotpoints: PlotPoints = sum_data_2
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, sample)| {
+                                        let x = i as f64;
+                                        let y = *sample as f64 - offset_osc_view;
+                                        [x, y]
+                                    })
+                                    .collect();
+                                sum_line_2 = Line::new(sum_plotpoints)
                                     .color(user_sum_line.linear_multiply(0.25))
                                     .stroke(Stroke::new(0.9, user_sum_line));
                             }
@@ -2372,8 +2611,10 @@ inactive_bg = 60,60,60");
                                         // Draw the sum line first so it's furthest behind
                                         if en_filled_osc.load(Ordering::SeqCst) {
                                             plot_ui.line(sum_line.fill(0.0));
+                                            plot_ui.line(sum_line_2.fill(0.0));
                                         } else {
                                             plot_ui.line(sum_line);
+                                            plot_ui.line(sum_line_2);
                                         }
                                     }
 
@@ -2388,43 +2629,55 @@ inactive_bg = 60,60,60");
                                             if en_aux5.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_5.fill(0.0));
+                                                    plot_ui.line(aux_line_5_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_5);
+                                                    plot_ui.line(aux_line_5_2);
                                                 }
                                             }
                                             if en_aux4.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_4.fill(0.0));
+                                                    plot_ui.line(aux_line_4_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_4);
+                                                    plot_ui.line(aux_line_4_2);
                                                 }
                                             }
                                             if en_aux3.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_3.fill(0.0));
+                                                    plot_ui.line(aux_line_3_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_3);
+                                                    plot_ui.line(aux_line_3_2);
                                                 }
                                             }
                                             if en_aux2.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_2.fill(0.0));
+                                                    plot_ui.line(aux_line_2_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_2);
+                                                    plot_ui.line(aux_line_2_2);
                                                 }
                                             }
                                             if en_aux1.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line.fill(0.0));
+                                                    plot_ui.line(aux_line__2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line);
+                                                    plot_ui.line(aux_line__2);
                                                 }
                                             }
                                             if en_main.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(line.fill(0.0));
+                                                    plot_ui.line(line_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(line);
+                                                    plot_ui.line(line_2);
                                                 }
                                             }
                                         }
@@ -2432,43 +2685,55 @@ inactive_bg = 60,60,60");
                                             if en_main.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(line.fill(0.0));
+                                                    plot_ui.line(line_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(line);
+                                                    plot_ui.line(line_2);
                                                 }
                                             }
                                             if en_aux5.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_5.fill(0.0));
+                                                    plot_ui.line(aux_line_5_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_5);
+                                                    plot_ui.line(aux_line_5_2);
                                                 }
                                             }
                                             if en_aux4.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_4.fill(0.0));
+                                                    plot_ui.line(aux_line_4_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_4);
+                                                    plot_ui.line(aux_line_4_2);
                                                 }
                                             }
                                             if en_aux3.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_3.fill(0.0));
+                                                    plot_ui.line(aux_line_3_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_3);
+                                                    plot_ui.line(aux_line_3_2);
                                                 }
                                             }
                                             if en_aux2.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_2.fill(0.0));
+                                                    plot_ui.line(aux_line_2_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_2);
+                                                    plot_ui.line(aux_line_2_2);
                                                 }
                                             }
                                             if en_aux1.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line.fill(0.0));
+                                                    plot_ui.line(aux_line__2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line);
+                                                    plot_ui.line(aux_line__2);
                                                 }
                                             }
                                         }
@@ -2476,43 +2741,55 @@ inactive_bg = 60,60,60");
                                             if en_aux1.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line.fill(0.0));
+                                                    plot_ui.line(aux_line__2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line);
+                                                    plot_ui.line(aux_line__2);
                                                 }
                                             }
                                             if en_main.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(line.fill(0.0));
+                                                    plot_ui.line(line_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(line);
+                                                    plot_ui.line(line_2);
                                                 }
                                             }
                                             if en_aux5.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_5.fill(0.0));
+                                                    plot_ui.line(aux_line_5_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_5);
+                                                    plot_ui.line(aux_line_5_2);
                                                 }
                                             }
                                             if en_aux4.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_4.fill(0.0));
+                                                    plot_ui.line(aux_line_4_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_4);
+                                                    plot_ui.line(aux_line_4_2);
                                                 }
                                             }
                                             if en_aux3.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_3.fill(0.0));
+                                                    plot_ui.line(aux_line_3_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_3);
+                                                    plot_ui.line(aux_line_3_2);
                                                 }
                                             }
                                             if en_aux2.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_2.fill(0.0));
+                                                    plot_ui.line(aux_line_2_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_2);
+                                                    plot_ui.line(aux_line_2_2);
                                                 }
                                             }
                                         }
@@ -2520,43 +2797,55 @@ inactive_bg = 60,60,60");
                                             if en_aux2.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_2.fill(0.0));
+                                                    plot_ui.line(aux_line_2_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_2);
+                                                    plot_ui.line(aux_line_2_2);
                                                 }
                                             }
                                             if en_aux1.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line.fill(0.0));
+                                                    plot_ui.line(aux_line__2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line);
+                                                    plot_ui.line(aux_line__2);
                                                 }
                                             }
                                             if en_main.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(line.fill(0.0));
+                                                    plot_ui.line(line_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(line);
+                                                    plot_ui.line(line_2);
                                                 }
                                             }
                                             if en_aux5.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_5.fill(0.0));
+                                                    plot_ui.line(aux_line_5_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_5);
+                                                    plot_ui.line(aux_line_5_2);
                                                 }
                                             }
                                             if en_aux4.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_4.fill(0.0));
+                                                    plot_ui.line(aux_line_4_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_4);
+                                                    plot_ui.line(aux_line_4_2);
                                                 }
                                             }
                                             if en_aux3.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_3.fill(0.0));
+                                                    plot_ui.line(aux_line_3_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_3);
+                                                    plot_ui.line(aux_line_3_2);
                                                 }
                                             }
                                         }
@@ -2564,43 +2853,55 @@ inactive_bg = 60,60,60");
                                             if en_aux3.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_3.fill(0.0));
+                                                    plot_ui.line(aux_line_3_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_3);
+                                                    plot_ui.line(aux_line_3_2);
                                                 }
                                             }
                                             if en_aux2.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_2.fill(0.0));
+                                                    plot_ui.line(aux_line_2_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_2);
+                                                    plot_ui.line(aux_line_2_2);
                                                 }
                                             }
                                             if en_aux1.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line.fill(0.0));
+                                                    plot_ui.line(aux_line__2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line);
+                                                    plot_ui.line(aux_line__2);
                                                 }
                                             }
                                             if en_main.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(line.fill(0.0));
+                                                    plot_ui.line(line_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(line);
+                                                    plot_ui.line(line_2);
                                                 }
                                             }
                                             if en_aux5.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_5.fill(0.0));
+                                                    plot_ui.line(aux_line_5_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_5);
+                                                    plot_ui.line(aux_line_5_2);
                                                 }
                                             }
                                             if en_aux4.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_4.fill(0.0));
+                                                    plot_ui.line(aux_line_4_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_4);
+                                                    plot_ui.line(aux_line_4_2);
                                                 }
                                             }
                                         }
@@ -2608,43 +2909,55 @@ inactive_bg = 60,60,60");
                                             if en_aux4.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_4.fill(0.0));
+                                                    plot_ui.line(aux_line_4_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_4);
+                                                    plot_ui.line(aux_line_4_2);
                                                 }
                                             }
                                             if en_aux3.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_3.fill(0.0));
+                                                    plot_ui.line(aux_line_3_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_3);
+                                                    plot_ui.line(aux_line_3_2);
                                                 }
                                             }
                                             if en_aux2.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_2.fill(0.0));
+                                                    plot_ui.line(aux_line_2_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_2);
+                                                    plot_ui.line(aux_line_2_2);
                                                 }
                                             }
                                             if en_aux1.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line.fill(0.0));
+                                                    plot_ui.line(aux_line__2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line);
+                                                    plot_ui.line(aux_line__2);
                                                 }
                                             }
                                             if en_main.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(line.fill(0.0));
+                                                    plot_ui.line(line_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(line);
+                                                    plot_ui.line(line_2);
                                                 }
                                             }
                                             if en_aux5.load(Ordering::SeqCst) {
                                                 if fill {
                                                     plot_ui.line(aux_line_5.fill(0.0));
+                                                    plot_ui.line(aux_line_5_2.fill(0.0));
                                                 } else {
                                                     plot_ui.line(aux_line_5);
+                                                    plot_ui.line(aux_line_5_2);
                                                 }
                                             }
                                         }
@@ -2656,22 +2969,53 @@ inactive_bg = 60,60,60");
                                     // Draw our clipping guides if needed
                                     let clip_counter = is_clipping.load(Ordering::Relaxed);
                                     if clip_counter > 0.0 {
-                                        plot_ui.hline(
-                                            HLine::new(1.0)
-                                                .color(Color32::RED)
-                                                .stroke(Stroke::new(0.6, Color32::RED)),
-                                        );
-                                        plot_ui.hline(
-                                            HLine::new(-1.0)
-                                                .color(Color32::RED)
-                                                .stroke(Stroke::new(0.6, Color32::RED)),
-                                        );
+                                        if stereo_view.load(Ordering::SeqCst) {
+                                            plot_ui.hline(
+                                                HLine::new(2.0)
+                                                    .color(Color32::RED)
+                                                    .stroke(Stroke::new(0.6, Color32::RED)),
+                                            );
+                                            plot_ui.hline(
+                                                HLine::new(-2.0)
+                                                    .color(Color32::RED)
+                                                    .stroke(Stroke::new(0.6, Color32::RED)),
+                                            );
+                                            plot_ui.hline(
+                                                HLine::new(0.0)
+                                                    .color(Color32::RED)
+                                                    .stroke(Stroke::new(0.6, Color32::RED)),
+                                            );
+                                        } else {
+                                            plot_ui.hline(
+                                                HLine::new(1.0)
+                                                    .color(Color32::RED)
+                                                    .stroke(Stroke::new(0.6, Color32::RED)),
+                                            );
+                                            plot_ui.hline(
+                                                HLine::new(-1.0)
+                                                    .color(Color32::RED)
+                                                    .stroke(Stroke::new(0.6, Color32::RED)),
+                                            );
+                                        }
                                         is_clipping.store(clip_counter - 1.0, Ordering::Relaxed);
                                     }
                                 })
                             .response;
                         }
                     });
+
+                    // Floating buttons
+                    if !show_analyzer.load(Ordering::Relaxed) {
+                        let mut stereo_switch_ui = ui.child_ui(
+                            Rect { min: Pos2 { x: 930.0, y: 30.0 }, max: Pos2 { x: 1040.0, y: 40.0 } },
+                            Layout::centered_and_justified(egui::Direction::LeftToRight)
+                        );
+                        stereo_switch_ui
+                            .scope(|ui| {
+                                let checkstereo = slim_checkbox::AtomicSlimCheckbox::new(&stereo_view, "Stereo View");
+                                ui.add(checkstereo)
+                            }).inner;
+                    }
 
                     // Put things back after drawing so process() isn't broken
                     if dir_var.load(Ordering::SeqCst) {
@@ -2681,6 +3025,14 @@ inactive_bg = 60,60,60");
                         aux_samples_3.make_contiguous().reverse();
                         aux_samples_4.make_contiguous().reverse();
                         aux_samples_5.make_contiguous().reverse();
+
+                        samples_2.make_contiguous().reverse();
+                        aux_samples_1_2.make_contiguous().reverse();
+                        aux_samples_2_2.make_contiguous().reverse();
+                        aux_samples_3_2.make_contiguous().reverse();
+                        aux_samples_4_2.make_contiguous().reverse();
+                        aux_samples_5_2.make_contiguous().reverse();
+
                         scrolling_beat_lines.make_contiguous().reverse();
                     }
                 });
@@ -2710,7 +3062,7 @@ inactive_bg = 60,60,60");
                 self.sample_rate.store(sample_rate, Ordering::Relaxed);
             }
             // Reset this every buffer process
-            self.skip_counter = 0;
+            self.skip_counter.store(0, Ordering::SeqCst);
 
             // Get iterators outside the loop
             // These are immutable to not break borrows and the .to_iter() things that return borrows
@@ -2722,8 +3074,11 @@ inactive_bg = 60,60,60");
             let aux_4 = aux.inputs[4].as_slice_immutable();
 
             if !self.show_analyzer.load(Ordering::SeqCst) {
-                for (b0, ax0, ax1, ax2, ax3, ax4) in
-                    izip!(raw_buffer, aux_0, aux_1, aux_2, aux_3, aux_4)
+                let channels = [0,1];
+                //                                                             [          CHANNEL         ]
+                // Iterate over all inputs at the same time. they are in form [[[left, right],[left,right]],...]
+                for (b0, ax0, ax1, ax2, ax3, ax4, channel) in
+                    izip!(raw_buffer, aux_0, aux_1, aux_2, aux_3, aux_4, channels)
                 {
                     let current_beat: f64 = context.transport().pos_beats().unwrap();
                     let temp_current_beat: f64 = (current_beat * 10000.0 as f64).round() / 10000.0 as f64;
@@ -2784,28 +3139,37 @@ inactive_bg = 60,60,60");
                                 self.in_place_index.store(0, Ordering::SeqCst);
                             }
                         } else {
+                            const EPSILON: f64 = 0.0001;
                             // Works in FL Studio but not other daws, hence the previous couple of lines
                             match self.params.sync_timing.value() {
                                 BeatSync::Bar => {
-                                    if temp_current_beat % 4.0 == 0.0 {
+                                    //temp_current_beat % 4.0 == 0.0
+                                    if (temp_current_beat % 4.0) < EPSILON {
                                         // Reset our index to the sample vecdeques
                                         //self.in_place_index = Arc::new(Mutex::new(0));
                                         self.in_place_index.store(0, Ordering::SeqCst);
-                                        self.skip_counter = 0;
+                                        self.skip_counter.store(0, Ordering::SeqCst);
                                     }
                                 }
                                 BeatSync::Beat => {
-                                    if temp_current_beat % 1.0 == 0.0 {
+                                    //temp_current_beat % 1.0 == 0.0
+                                    if (temp_current_beat % 1.0) < EPSILON {
                                         // Reset our index to the sample vecdeques
                                         //self.in_place_index = Arc::new(Mutex::new(0));
                                         self.in_place_index.store(0, Ordering::SeqCst);
-                                        self.skip_counter = 0;
+                                        self.skip_counter.store(0, Ordering::SeqCst);
                                     }
                                 }
                             }
                         }
                     }
 
+                    // Reset the right side skipping getting out of control in stereo mode
+                    if channel == 1 {
+                        self.skip_counter.store(0, Ordering::SeqCst);
+                    }
+
+                    // Scrollscope is running as a single channel through here
                     for (
                         sample,
                         aux_sample_1,
@@ -2819,40 +3183,39 @@ inactive_bg = 60,60,60");
                         ax1.iter(),
                         ax2.iter(),
                         ax3.iter(),
-                        ax4.iter()
+                        ax4.iter(),
                     ) {
                         // Only grab X(skip_counter) samples to "optimize"
-                        if self.skip_counter % self.params.h_scale.value() == 0 {
+                        if self.skip_counter.load(Ordering::SeqCst) % self.params.h_scale.value() == 0 {
                             let current_gain = self.params.free_gain.smoothed.next();
                             // Apply gain to main signal
-                            let visual_main_sample: f32 = *sample * current_gain;
+                            let visual_main_sample: f32 = sample * current_gain;
                             // Apply gain to sidechains if it isn't doubled up/cloned (FL Studio does this)
-                            let visual_aux_sample_1 = if *aux_sample_1 != *sample {
-                                *aux_sample_1 * current_gain
+                            let visual_aux_sample_1 = if aux_sample_1 != sample {
+                                aux_sample_1 * current_gain
                             } else {
                                 0.0
                             };
-                            let visual_aux_sample_2 = if *aux_sample_2 != *sample {
-                                *aux_sample_2 * current_gain
+                            let visual_aux_sample_2 = if aux_sample_2 != sample {
+                                aux_sample_2 * current_gain
                             } else {
                                 0.0
                             };
-                            let visual_aux_sample_3 = if *aux_sample_3 != *sample {
-                                *aux_sample_3 * current_gain
+                            let visual_aux_sample_3 = if aux_sample_3 != sample {
+                                aux_sample_3 * current_gain
                             } else {
                                 0.0
                             };
-                            let visual_aux_sample_4 = if *aux_sample_4 != *sample {
-                                *aux_sample_4 * current_gain
+                            let visual_aux_sample_4 = if aux_sample_4 != sample {
+                                aux_sample_4 * current_gain
                             } else {
                                 0.0
                             };
-                            let visual_aux_sample_5 = if *aux_sample_5 != *sample {
-                                *aux_sample_5 * current_gain
+                            let visual_aux_sample_5 = if aux_sample_5 != sample {
+                                aux_sample_5 * current_gain
                             } else {
                                 0.0
                             };
-
                             // Set clipping flag if absolute gain over 1
                             if visual_main_sample.abs() > 1.0
                                 || visual_aux_sample_1.abs() > 1.0
@@ -2863,14 +3226,33 @@ inactive_bg = 60,60,60");
                             {
                                 self.is_clipping.store(120.0, Ordering::Relaxed);
                             }
-                            // Update our main samples vector for oscilloscope drawing
-                            let mut guard = self.samples.lock().unwrap();
-                            // Update our sidechain samples vector for oscilloscope drawing
-                            let mut aux_guard = self.aux_samples_1.lock().unwrap();
-                            let mut aux_guard_2 = self.aux_samples_2.lock().unwrap();
-                            let mut aux_guard_3 = self.aux_samples_3.lock().unwrap();
-                            let mut aux_guard_4 = self.aux_samples_4.lock().unwrap();
-                            let mut aux_guard_5 = self.aux_samples_5.lock().unwrap();
+                            
+                            let mut guard;
+                            let mut aux_guard;
+                            let mut aux_guard_2;
+                            let mut aux_guard_3;
+                            let mut aux_guard_4;
+                            let mut aux_guard_5;
+                            if channel == 0 {
+                                // Update our main samples vector for oscilloscope drawing
+                                guard = self.samples.lock().unwrap();
+                                // Update our sidechain samples vector for oscilloscope drawing
+                                aux_guard = self.aux_samples_1.lock().unwrap();
+                                aux_guard_2 = self.aux_samples_2.lock().unwrap();
+                                aux_guard_3 = self.aux_samples_3.lock().unwrap();
+                                aux_guard_4 = self.aux_samples_4.lock().unwrap();
+                                aux_guard_5 = self.aux_samples_5.lock().unwrap();
+                            } else {
+                                // Update our main samples vector for oscilloscope drawing
+                                guard = self.samples_2.lock().unwrap();
+                                // Update our sidechain samples vector for oscilloscope drawing
+                                aux_guard = self.aux_samples_1_2.lock().unwrap();
+                                aux_guard_2 = self.aux_samples_2_2.lock().unwrap();
+                                aux_guard_3 = self.aux_samples_3_2.lock().unwrap();
+                                aux_guard_4 = self.aux_samples_4_2.lock().unwrap();
+                                aux_guard_5 = self.aux_samples_5_2.lock().unwrap();
+                            }
+                            
                             let mut sbl_guard = self.scrolling_beat_lines.lock().unwrap();
                             // If beat sync is on, we need to process changes in place
                             if self.sync_var.load(Ordering::SeqCst) {
@@ -2878,21 +3260,30 @@ inactive_bg = 60,60,60");
                                 let ipi_index: usize = self.in_place_index.load(Ordering::SeqCst) as usize;
                                 // If we add a beat line, also clean all VecDeques past this index to line them up
                                 if self.add_beat_line.load(Ordering::SeqCst) {
-                                    sbl_guard.push_front(1.0);
-                                    sbl_guard.push_front(-1.0);
+                                    if self.stereo_view.load(Ordering::SeqCst) {
+                                        sbl_guard.push_front(2.1);
+                                        sbl_guard.push_front(-2.1);
+                                    } else {
+                                        sbl_guard.push_front(1.0);
+                                        sbl_guard.push_front(-1.0);
+                                    }
                                     self.add_beat_line.store(false, Ordering::SeqCst);
                                     if self.alt_sync.load(Ordering::SeqCst) && self.params.sync_timing.value() == BeatSync::Beat {
-                                        // This removes extra stuff on the right (jitter)
-                                        guard.drain(ipi_index..);
-                                        aux_guard.drain(ipi_index..);
-                                        aux_guard_2.drain(ipi_index..);
-                                        aux_guard_3.drain(ipi_index..);
-                                        aux_guard_4.drain(ipi_index..);
-                                        aux_guard_5.drain(ipi_index..);
+                                        // Fix random crash where disable and enable sync attempts drain on unknown index
+                                        if guard.get(ipi_index).is_some() {
+                                            // This removes extra stuff on the right (jitter)
+                                            guard.drain(ipi_index..);
+                                            aux_guard.drain(ipi_index..);
+                                            aux_guard_2.drain(ipi_index..);
+                                            aux_guard_3.drain(ipi_index..);
+                                            aux_guard_4.drain(ipi_index..);
+                                            aux_guard_5.drain(ipi_index..);
+                                        }
                                     }
                                 } else {
                                     sbl_guard.push_front(0.0);
                                 }
+
                                 // Check if our indexes exists
                                 let main_element: Option<&f32> = guard.get(ipi_index);
                                 let aux_element: Option<&f32> = aux_guard.get(ipi_index);
@@ -2940,12 +3331,20 @@ inactive_bg = 60,60,60");
                             }
                             // Beat sync is off: allow "scroll"
                             else {
-                                if self.add_beat_line.load(Ordering::SeqCst) {
-                                    sbl_guard.push_front(1.0);
-                                    sbl_guard.push_front(-1.0);
-                                    self.add_beat_line.store(false, Ordering::SeqCst);
-                                } else {
-                                    sbl_guard.push_front(0.0);
+                                if channel == 0 {
+                                    if self.add_beat_line.load(Ordering::SeqCst) {
+                                        if self.stereo_view.load(Ordering::SeqCst) {
+                                            sbl_guard.push_front(2.1);
+                                            sbl_guard.push_front(-2.1);
+                                        } else {
+                                            sbl_guard.push_front(1.0);
+                                            sbl_guard.push_front(-1.0);
+                                        }
+                                        
+                                        self.add_beat_line.store(false, Ordering::SeqCst);
+                                    } else {
+                                        sbl_guard.push_front(0.0);
+                                    }
                                 }
                                 guard.push_front(visual_main_sample);
                                 aux_guard.push_front(visual_aux_sample_1);
@@ -2980,14 +3379,17 @@ inactive_bg = 60,60,60");
                                 sbl_guard.resize(scroll, 0.0);
                             }
                         }
-                        self.skip_counter += 1;
+                        
+                        //if channel == 0 {
+                            self.skip_counter.fetch_add(1, Ordering::SeqCst);
+                        //}
                     }
                 }
             } else {
                 for (b0, ax0, ax1, ax2, ax3, ax4) in
                     izip!(raw_buffer, aux_0, aux_1, aux_2, aux_3, aux_4)
                 {
-                    if self.skip_counter % self.params.h_scale.value() == 0 {
+                    if self.skip_counter.load(Ordering::SeqCst) % self.params.h_scale.value() == 0 {
                         for (
                             sample,
                             aux_sample_1,
@@ -3071,7 +3473,7 @@ inactive_bg = 60,60,60");
                             }
                         }
                     }
-                    self.skip_counter += 1;
+                    self.skip_counter.fetch_add(1, Ordering::SeqCst);
                 }
             }
         }
@@ -3107,5 +3509,28 @@ fn pivot_frequency_slope(freq: f32, magnitude: f32, f0: f32, slope: f32) -> f32{
         magnitude * (freq / f0).powf(slope / 20.0)
     } else {
         magnitude * (f0 / freq).powf(slope / 20.0)
+    }
+}
+
+fn add_vecdeques(a: &VecDeque<f32>, b: &VecDeque<f32>) -> VecDeque<f32> {
+    let len = std::cmp::max(a.len(), b.len());
+
+    // Create a result VecDeque with capacity for the longest VecDeque
+    let mut result = VecDeque::with_capacity(len);
+
+    for i in 0..len {
+        let x = a.get(i).copied().unwrap_or(0.0); // Use 0.0 if out of bounds
+        let y = b.get(i).copied().unwrap_or(0.0); // Use 0.0 if out of bounds
+        result.push_back(x + y);
+    }
+
+    result
+}
+
+fn flush_denormal(val: f32) -> f32 {
+    if val.abs() < 1.0e-12 {
+        0.0
+    } else {
+        val
     }
 }

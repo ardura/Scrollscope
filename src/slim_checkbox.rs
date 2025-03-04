@@ -4,10 +4,8 @@
 // ----------------------------------------------------------------------------
 
 use std::sync::atomic::{AtomicBool, Ordering};
-
 use nih_plug_egui::egui::{
-    epaint, pos2, vec2, NumExt, Response, Sense, Shape, TextStyle, Ui, Vec2, Widget, WidgetInfo,
-    WidgetText, WidgetType,
+    epaint, pos2, vec2, NumExt, Rect, Response, Sense, Shape, TextStyle, TextureId, Ui, Vec2, Widget, WidgetInfo, WidgetText, WidgetType
 };
 
 // TODO(emilk): allow checkbox without a text label
@@ -82,6 +80,7 @@ impl<'a> Widget for AtomicSlimCheckbox<'a> {
         response.widget_info(|| {
             WidgetInfo::selected(
                 WidgetType::Checkbox,
+                true,
                 checked.load(Ordering::SeqCst),
                 text.as_ref().map_or("", |x| x.text()),
             )
@@ -93,9 +92,15 @@ impl<'a> Widget for AtomicSlimCheckbox<'a> {
             let (small_icon_rect, big_icon_rect) = ui.spacing().icon_rectangles(rect);
             ui.painter().add(epaint::RectShape {
                 rect: big_icon_rect.expand(visuals.expansion),
-                rounding: visuals.rounding,
+                corner_radius: visuals.corner_radius,
                 fill: visuals.bg_fill,
                 stroke: visuals.bg_stroke,
+                //fill_texture_id: TextureId::default(),
+                //uv: big_icon_rect.expand(visuals.expansion),
+                blur_width: 0.0,
+                stroke_kind: epaint::StrokeKind::Inside,
+                round_to_pixels: Option::None,
+                brush: Option::None,
             });
 
             if checked.load(Ordering::SeqCst) {
@@ -114,7 +119,7 @@ impl<'a> Widget for AtomicSlimCheckbox<'a> {
                     rect.min.x + icon_width + icon_spacing,
                     rect.center().y - 0.5 * text.size().y,
                 );
-                text.paint_with_visuals(ui.painter(), text_pos, visuals);
+                ui.painter().galley(text_pos, text, visuals.fg_stroke.color);
             }
         }
 
@@ -171,6 +176,7 @@ impl<'a> Widget for SlimCheckbox<'a> {
         response.widget_info(|| {
             WidgetInfo::selected(
                 WidgetType::Checkbox,
+                true,
                 *checked,
                 text.as_ref().map_or("", |x| x.text()),
             )
@@ -182,9 +188,13 @@ impl<'a> Widget for SlimCheckbox<'a> {
             let (small_icon_rect, big_icon_rect) = ui.spacing().icon_rectangles(rect);
             ui.painter().add(epaint::RectShape {
                 rect: big_icon_rect.expand(visuals.expansion),
-                rounding: visuals.rounding,
-                fill: visuals.bg_fill,
-                stroke: visuals.bg_stroke,
+                corner_radius: visuals.corner_radius,
+                fill: visuals.weak_bg_fill,
+                stroke: visuals.fg_stroke,
+                blur_width: 0.0,
+                stroke_kind: epaint::StrokeKind::Inside,
+                round_to_pixels: Option::None,
+                brush: Option::None,
             });
 
             if *checked {
@@ -203,7 +213,7 @@ impl<'a> Widget for SlimCheckbox<'a> {
                     rect.min.x + icon_width + icon_spacing,
                     rect.center().y - 0.5 * text.size().y,
                 );
-                text.paint_with_visuals(ui.painter(), text_pos, visuals);
+                ui.painter().galley(text_pos, text, visuals.fg_stroke.color);
             }
         }
 

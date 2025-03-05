@@ -5,7 +5,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use nih_plug_egui::egui::{
-    epaint, pos2, vec2, NumExt, Rect, Response, Sense, Shape, TextStyle, TextureId, Ui, Vec2, Widget, WidgetInfo, WidgetText, WidgetType
+    epaint, pos2, vec2, NumExt, Response, Sense, Shape, TextStyle, Ui, Vec2, Widget, WidgetInfo, WidgetText, WidgetType
 };
 
 // TODO(emilk): allow checkbox without a text label

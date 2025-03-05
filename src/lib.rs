@@ -2,9 +2,9 @@ use atomic_float::{AtomicF32};
 use itertools::{izip};
 use nih_plug::{prelude::*};
 use nih_plug_egui::EguiState;
-use rustfft::{FftPlanner};
-use std::{env, sync::{atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering}, Arc}};
-use std::{collections::VecDeque, sync::Mutex};
+use rustfft::{num_complex::Complex, FftPlanner};
+use std::{env, sync::{atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering}, Arc}};
+use std::sync::Mutex;
 
 mod slim_checkbox;
 mod scrollscope_gui;
@@ -19,6 +19,88 @@ mod scrollscope_gui;
  * If you don't want/need the standalone version you can save time by only compiling the VST + CLAP with "--lib"
  * cargo xtask bundle scrollscope --profile release --lib
  * ************************************************/
+
+const MAX_BUFFER_SIZE: usize = 48000;
+const NUM_CHANNELS: usize = 7; // Main + 5 aux + beat lines
+
+struct LockFreeCircularBuffer {
+    internal_length: AtomicUsize,
+    buffers: Vec<Box<[AtomicF32]>>, // Heap-allocated storage
+    write_indices: [AtomicUsize; NUM_CHANNELS],
+}
+
+impl LockFreeCircularBuffer {
+    fn new(size: usize) -> Self {
+        /*
+        Self {
+            internal_length: AtomicUsize::new(size),
+            buffers: std::array::from_fn(|_| std::array::from_fn(|_| AtomicF32::new(0.0))),
+            write_indices: std::array::from_fn(|_| AtomicUsize::new(0)),
+        }
+        */
+        Self {
+            internal_length: AtomicUsize::new(size),
+            buffers: (0..NUM_CHANNELS)
+                .map(|_| {
+                    (0..MAX_BUFFER_SIZE)
+                        .map(|_| AtomicF32::new(0.0))
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice()
+                })
+                .collect(), // Collect into a Vec<Box<[AtomicF32]>>
+            write_indices: std::array::from_fn(|_| AtomicUsize::new(0)),
+        }
+    }
+    
+    fn update_sample(&self, channel: usize, index: usize, sample: f32) {
+        self.buffers[channel][index].store(sample, Ordering::Relaxed);
+    }
+
+    fn update_internal_length(&self, new_length: usize) {
+        self.internal_length.store(new_length, Ordering::Relaxed);
+    }
+
+    fn push_sample(&self, channel: usize, sample: f32) {
+        if channel >= NUM_CHANNELS { return; }
+
+        let write_idx = self.write_indices[channel].fetch_add(1, Ordering::Relaxed) % self.internal_length.load(Ordering::Relaxed);
+        self.buffers[channel][write_idx].store(sample, Ordering::Relaxed);
+    }
+
+    fn get_sample(&self, channel: usize, index: usize) -> Option<f32> {
+        return Option::Some(self.buffers[channel][index].load(Ordering::Relaxed))
+    }
+
+    fn get_samples(&self, channel: usize) -> Vec<f32> {
+        if channel >= NUM_CHANNELS { return Vec::new(); }
+
+        let write_idx = self.write_indices[channel].load(Ordering::Relaxed);
+        
+        let local_int_len = self.internal_length.load(Ordering::Relaxed);
+        let mut samples = Vec::with_capacity(local_int_len);
+        for i in 0..local_int_len {
+            let idx = (write_idx + i) % local_int_len;
+            samples.push(self.buffers[channel][idx].load(Ordering::Relaxed));
+        }
+        samples
+    }
+
+    fn get_complex_samples_with_length(&self, channel: usize, length: usize) -> Vec<Complex<f32>> {
+        if channel >= NUM_CHANNELS { return Vec::new(); }
+        let local_int_len = self.internal_length.load(Ordering::Relaxed);
+
+        let write_idx = self.write_indices[channel].load(Ordering::Relaxed);
+        
+        let mut complex_samples = Vec::with_capacity(length.min(local_int_len));
+        for i in 0..length.min(local_int_len) {
+            let idx = (write_idx + i) % local_int_len;
+            let sample = self.buffers[channel][idx].load(Ordering::Relaxed);
+            
+            complex_samples.push(Complex::new(flush_denormal_bits(sample), 0.0));
+        }
+        complex_samples
+    }
+}
 
 #[derive(Enum, Clone, PartialEq)]
 pub enum BeatSync {
@@ -45,21 +127,9 @@ pub struct Scrollscope {
     enable_bar_mode: Arc<AtomicBool>,
 
     // Data holding values
-    samples: Arc<Mutex<VecDeque<f32>>>,
-    aux_samples_1: Arc<Mutex<VecDeque<f32>>>,
-    aux_samples_2: Arc<Mutex<VecDeque<f32>>>,
-    aux_samples_3: Arc<Mutex<VecDeque<f32>>>,
-    aux_samples_4: Arc<Mutex<VecDeque<f32>>>,
-    aux_samples_5: Arc<Mutex<VecDeque<f32>>>,
-    scrolling_beat_lines: Arc<Mutex<VecDeque<f32>>>,
-
+    sample_buffer: Arc<LockFreeCircularBuffer>,
     // Stereo field uses this second set
-    samples_2: Arc<Mutex<VecDeque<f32>>>,
-    aux_samples_1_2: Arc<Mutex<VecDeque<f32>>>,
-    aux_samples_2_2: Arc<Mutex<VecDeque<f32>>>,
-    aux_samples_3_2: Arc<Mutex<VecDeque<f32>>>,
-    aux_samples_4_2: Arc<Mutex<VecDeque<f32>>>,
-    aux_samples_5_2: Arc<Mutex<VecDeque<f32>>>,
+    sample_buffer_2: Arc<LockFreeCircularBuffer>,
 
     // Syncing for beats
     sync_var: Arc<AtomicBool>,
@@ -122,19 +192,10 @@ impl Default for Scrollscope {
             enable_sum: Arc::new(AtomicBool::new(true)),
             enable_guidelines: Arc::new(AtomicBool::new(true)),
             enable_bar_mode: Arc::new(AtomicBool::new(false)),
-            samples: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
-            aux_samples_1: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
-            aux_samples_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
-            aux_samples_3: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
-            aux_samples_4: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
-            aux_samples_5: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
-            samples_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
-            aux_samples_1_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
-            aux_samples_2_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
-            aux_samples_3_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
-            aux_samples_4_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
-            aux_samples_5_2: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
-            scrolling_beat_lines: Arc::new(Mutex::new(VecDeque::with_capacity(130))),
+            
+            sample_buffer: Arc::new(LockFreeCircularBuffer::new(130)),
+            sample_buffer_2: Arc::new(LockFreeCircularBuffer::new(130)),
+
             sync_var: Arc::new(AtomicBool::new(false)),
             alt_sync: Arc::new(AtomicBool::new(false)),
             add_beat_line: Arc::new(AtomicBool::new(false)),
@@ -196,7 +257,7 @@ impl Plugin for Scrollscope {
 
     // This looks like it's flexible for running the plugin in mono or stereo
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
-        //              Inputs                                      Outputs                                 sidechain                               No Idea but needed
+        // Inputs,Outputs,sidechain,No Idea but needed
         AudioIOLayout {
             main_input_channels: NonZeroU32::new(2),
             main_output_channels: NonZeroU32::new(2),
@@ -349,9 +410,9 @@ impl Plugin for Scrollscope {
                     }
 
                     // Reset the right side skipping getting out of control in stereo mode
-                    if channel == 1 {
-                        self.skip_counter.store(0, Ordering::SeqCst);
-                    }
+                    //if channel == 1 {
+                    //    self.skip_counter.store(0, Ordering::SeqCst);
+                    //}
 
                     // Scrollscope is running as a single channel through here
                     for (
@@ -411,12 +472,15 @@ impl Plugin for Scrollscope {
                                 self.is_clipping.store(120.0, Ordering::Relaxed);
                             }
                             
+                            
+                            /*
                             let mut guard;
                             let mut aux_guard;
                             let mut aux_guard_2;
                             let mut aux_guard_3;
                             let mut aux_guard_4;
                             let mut aux_guard_5;
+                            
                             if channel == 0 {
                                 // Update our main samples vector for oscilloscope drawing
                                 guard = self.samples.lock().unwrap();
@@ -438,6 +502,7 @@ impl Plugin for Scrollscope {
                             }
                             
                             let mut sbl_guard = self.scrolling_beat_lines.lock().unwrap();
+                            */
                             // If beat sync is on, we need to process changes in place
                             if self.sync_var.load(Ordering::SeqCst) {
                                 // Access the in place index
@@ -445,15 +510,16 @@ impl Plugin for Scrollscope {
                                 // If we add a beat line, also clean all VecDeques past this index to line them up
                                 if self.add_beat_line.load(Ordering::SeqCst) {
                                     if self.stereo_view.load(Ordering::SeqCst) {
-                                        sbl_guard.push_front(2.1);
-                                        sbl_guard.push_front(-2.1);
+                                        self.sample_buffer.push_sample(6, 2.1);
+                                        self.sample_buffer.push_sample(6, -2.1);
                                     } else {
-                                        sbl_guard.push_front(1.0);
-                                        sbl_guard.push_front(-1.0);
+                                        self.sample_buffer.push_sample(6, 1.0);
+                                        self.sample_buffer.push_sample(6, -1.0);
                                     }
                                     self.add_beat_line.store(false, Ordering::SeqCst);
                                     if self.alt_sync.load(Ordering::SeqCst) && self.params.sync_timing.value() == BeatSync::Beat {
                                         // Fix random crash where disable and enable sync attempts drain on unknown index
+                                        /*
                                         if guard.get(ipi_index).is_some() {
                                             // This removes extra stuff on the right (jitter)
                                             guard.drain(ipi_index..);
@@ -463,53 +529,38 @@ impl Plugin for Scrollscope {
                                             aux_guard_4.drain(ipi_index..);
                                             aux_guard_5.drain(ipi_index..);
                                         }
+                                        */
                                     }
                                 } else {
-                                    sbl_guard.push_front(0.0);
+                                    self.sample_buffer.push_sample(6,0.0);
                                 }
 
                                 // Check if our indexes exists
-                                let main_element: Option<&f32> = guard.get(ipi_index);
-                                let aux_element: Option<&f32> = aux_guard.get(ipi_index);
-                                let aux_element_2: Option<&f32> = aux_guard_2.get(ipi_index);
-                                let aux_element_3: Option<&f32> = aux_guard_3.get(ipi_index);
-                                let aux_element_4: Option<&f32> = aux_guard_4.get(ipi_index);
-                                let aux_element_5: Option<&f32> = aux_guard_5.get(ipi_index);
-                                if main_element.is_some() {
+                                if self.sample_buffer.get_sample(0, ipi_index).is_some() {
                                     // Modify our index since it exists (this compensates for scale/sample changes)
-                                    let main_index_value: &mut f32 = guard.get_mut(ipi_index).unwrap();
-                                    *main_index_value = visual_main_sample;
+                                    self.sample_buffer.update_sample(0, ipi_index, visual_main_sample);
                                 }
-                                if aux_element.is_some() {
+                                if self.sample_buffer.get_sample(1, ipi_index).is_some() {
                                     // Modify our index since it exists (this compensates for scale/sample changes)
-                                    let aux_index_value: &mut f32 =
-                                        aux_guard.get_mut(ipi_index).unwrap();
-                                    *aux_index_value = visual_aux_sample_1;
+                                    self.sample_buffer.update_sample(1, ipi_index, visual_aux_sample_1);
                                 }
-                                if aux_element_2.is_some() {
+                                if self.sample_buffer.get_sample(2, ipi_index).is_some() {
                                     // Modify our index since it exists (this compensates for scale/sample changes)
-                                    let aux_index_value_2: &mut f32 =
-                                        aux_guard_2.get_mut(ipi_index).unwrap();
-                                    *aux_index_value_2 = visual_aux_sample_2;
+                                    self.sample_buffer.update_sample(2, ipi_index, visual_aux_sample_2);
                                 }
-                                if aux_element_3.is_some() {
+                                if self.sample_buffer.get_sample(3, ipi_index).is_some() {
                                     // Modify our index since it exists (this compensates for scale/sample changes)
-                                    let aux_index_value_3: &mut f32 =
-                                        aux_guard_3.get_mut(ipi_index).unwrap();
-                                    *aux_index_value_3 = visual_aux_sample_3;
+                                    self.sample_buffer.update_sample(3, ipi_index, visual_aux_sample_3);
                                 }
-                                if aux_element_4.is_some() {
+                                if self.sample_buffer.get_sample(4, ipi_index).is_some() {
                                     // Modify our index since it exists (this compensates for scale/sample changes)
-                                    let aux_index_value_4: &mut f32 =
-                                        aux_guard_4.get_mut(ipi_index).unwrap();
-                                    *aux_index_value_4 = visual_aux_sample_4;
+                                    self.sample_buffer.update_sample(4, ipi_index, visual_aux_sample_4);
                                 }
-                                if aux_element_5.is_some() {
+                                if self.sample_buffer.get_sample(5, ipi_index).is_some() {
                                     // Modify our index since it exists (this compensates for scale/sample changes)
-                                    let aux_index_value_5: &mut f32 =
-                                        aux_guard_5.get_mut(ipi_index).unwrap();
-                                    *aux_index_value_5 = visual_aux_sample_5;
+                                    self.sample_buffer.update_sample(5, ipi_index, visual_aux_sample_5);
                                 }
+
                                 // Increment our in_place_index now that we have substituted
                                 self.in_place_index.fetch_add(1, Ordering::SeqCst);
                             }
@@ -518,50 +569,30 @@ impl Plugin for Scrollscope {
                                 if channel == 0 {
                                     if self.add_beat_line.load(Ordering::SeqCst) {
                                         if self.stereo_view.load(Ordering::SeqCst) {
-                                            sbl_guard.push_front(2.1);
-                                            sbl_guard.push_front(-2.1);
+                                            self.sample_buffer.push_sample(6, 2.1);
+                                            self.sample_buffer.push_sample(6, -2.1);
                                         } else {
-                                            sbl_guard.push_front(1.0);
-                                            sbl_guard.push_front(-1.0);
+                                            self.sample_buffer.push_sample(6, 1.0);
+                                            self.sample_buffer.push_sample(6, -1.0);
                                         }
                                         
                                         self.add_beat_line.store(false, Ordering::SeqCst);
                                     } else {
-                                        sbl_guard.push_front(0.0);
+                                        self.sample_buffer.push_sample(6, 0.0);
                                     }
                                 }
-                                guard.push_front(visual_main_sample);
-                                aux_guard.push_front(visual_aux_sample_1);
-                                aux_guard_2.push_front(visual_aux_sample_2);
-                                aux_guard_3.push_front(visual_aux_sample_3);
-                                aux_guard_4.push_front(visual_aux_sample_4);
-                                aux_guard_5.push_front(visual_aux_sample_5);
+
+                                self.sample_buffer.push_sample(0, visual_main_sample);
+                                self.sample_buffer.push_sample(1, visual_aux_sample_1);
+                                self.sample_buffer.push_sample(2, visual_aux_sample_2);
+                                self.sample_buffer.push_sample(3, visual_aux_sample_3);
+                                self.sample_buffer.push_sample(4, visual_aux_sample_4);
+                                self.sample_buffer.push_sample(5, visual_aux_sample_5);
                             }
                             // ms = samples/samplerate so ms*samplerate = samples
                             // Limit the size of the vecdeques to X elements
-                            let scroll: usize = (sample_rate as usize / 1000.0 as usize)
-                                * self.params.scrollspeed.value() as usize;
-                            if guard.len() != scroll {
-                                guard.resize(scroll, 0.0);
-                            }
-                            if aux_guard.len() != scroll {
-                                aux_guard.resize(scroll, 0.0);
-                            }
-                            if aux_guard_2.len() != scroll {
-                                aux_guard_2.resize(scroll, 0.0);
-                            }
-                            if aux_guard_3.len() != scroll {
-                                aux_guard_3.resize(scroll, 0.0);
-                            }
-                            if aux_guard_4.len() != scroll {
-                                aux_guard_4.resize(scroll, 0.0);
-                            }
-                            if aux_guard_5.len() != scroll {
-                                aux_guard_5.resize(scroll, 0.0);
-                            }
-                            if sbl_guard.len() != scroll {
-                                sbl_guard.resize(scroll, 0.0);
-                            }
+                            //let scroll: usize = (sample_rate as usize / 1000_usize)
+                            //    * self.params.scrollspeed.value() as usize;
                         }
                         
                         //if channel == 0 {
@@ -619,42 +650,16 @@ impl Plugin for Scrollscope {
                                 0.0
                             };
 
-                            // Update our main samples vector for oscilloscope drawing
-                            let mut guard = self.samples.lock().unwrap();
-                            // Update our sidechain samples vector for oscilloscope drawing
-                            let mut aux_guard = self.aux_samples_1.lock().unwrap();
-                            let mut aux_guard_2 = self.aux_samples_2.lock().unwrap();
-                            let mut aux_guard_3 = self.aux_samples_3.lock().unwrap();
-                            let mut aux_guard_4 = self.aux_samples_4.lock().unwrap();
-                            let mut aux_guard_5 = self.aux_samples_5.lock().unwrap();
+                            // Update all the samples
+                            self.sample_buffer.push_sample(0, visual_main_sample);
+                            self.sample_buffer.push_sample(1, visual_aux_sample_1);
+                            self.sample_buffer.push_sample(2, visual_aux_sample_2);
+                            self.sample_buffer.push_sample(3, visual_aux_sample_3);
+                            self.sample_buffer.push_sample(4, visual_aux_sample_4);
+                            self.sample_buffer.push_sample(5, visual_aux_sample_5);
 
-                            guard.push_front(visual_main_sample);
-                            aux_guard.push_front(visual_aux_sample_1);
-                            aux_guard_2.push_front(visual_aux_sample_2);
-                            aux_guard_3.push_front(visual_aux_sample_3);
-                            aux_guard_4.push_front(visual_aux_sample_4);
-                            aux_guard_5.push_front(visual_aux_sample_5);
-
-                            let scroll: usize = (sample_rate as usize / 1000.0 as usize)
-                                    * self.params.scrollspeed.value() as usize;
-                            if guard.len() != scroll {
-                                guard.resize(scroll, 0.0);
-                            }
-                            if aux_guard.len() != scroll {
-                                aux_guard.resize(scroll, 0.0);
-                            }
-                            if aux_guard_2.len() != scroll {
-                                aux_guard_2.resize(scroll, 0.0);
-                            }
-                            if aux_guard_3.len() != scroll {
-                                aux_guard_3.resize(scroll, 0.0);
-                            }
-                            if aux_guard_4.len() != scroll {
-                                aux_guard_4.resize(scroll, 0.0);
-                            }
-                            if aux_guard_5.len() != scroll {
-                                aux_guard_5.resize(scroll, 0.0);
-                            }
+                            //let scroll: usize = (sample_rate as usize / 1000.0 as usize)
+                            //        * self.params.scrollspeed.value() as usize;
                         }
                     }
                     self.skip_counter.fetch_add(1, Ordering::SeqCst);
@@ -675,7 +680,7 @@ impl Plugin for Scrollscope {
         Box::new(|_| ())
     }
     
-    fn filter_state(state: &mut PluginState) {}
+    fn filter_state(_state: &mut PluginState) {}
     
     fn reset(&mut self) {}
     
@@ -713,23 +718,10 @@ fn pivot_frequency_slope(freq: f32, magnitude: f32, f0: f32, slope: f32) -> f32{
     }
 }
 
-fn add_vecdeques(a: &VecDeque<f32>, b: &VecDeque<f32>) -> VecDeque<f32> {
-    let len = std::cmp::max(a.len(), b.len());
-
-    // Create a result VecDeque with capacity for the longest VecDeque
-    let mut result = VecDeque::with_capacity(len);
-
-    for i in 0..len {
-        let x = a.get(i).copied().unwrap_or(0.0); // Use 0.0 if out of bounds
-        let y = b.get(i).copied().unwrap_or(0.0); // Use 0.0 if out of bounds
-        result.push_back(x + y);
-    }
-
-    result
-}
-
-fn flush_denormal(val: f32) -> f32 {
-    if val.abs() < 1.0e-12 {
+fn flush_denormal_bits(val: f32) -> f32 {
+    let bits = val.to_bits();
+    let abs_bits = bits & 0x7fffffff; // Clear sign bit
+    if abs_bits < 0x00800000 { // Check if denormal (exponent bits are all 0)
         0.0
     } else {
         val

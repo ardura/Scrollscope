@@ -1,35 +1,22 @@
-use atomic_float::{AtomicF32};
 use configparser::ini::Ini;
 use egui_plot::{HLine, Line, Plot, PlotPoints};
-use itertools::{izip};
 use nih_plug::{prelude::*};
 use nih_plug_egui::{
     create_egui_editor,
     egui::{
-        self, epaint::{self}, pos2, Align2, Color32, CornerRadius, FontId, Layout, Pos2, Rect, Response, Rounding, Stroke, UiBuilder
+        self, epaint::{self}, pos2, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Stroke, UiBuilder
     },
     widgets,
 };
-use rustfft::{num_complex::Complex, Fft, FftDirection, FftPlanner};
-use std::{env, fs::File, io::Write, path::MAIN_SEPARATOR_STR, str::FromStr, sync::{atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering}, Arc}};
-use std::{collections::VecDeque, ops::RangeInclusive, sync::Mutex};
-use crate::{add_vecdeques, flush_denormal, pivot_frequency_slope, slim_checkbox, Scrollscope};
+use rustfft::{num_complex::Complex, Fft, FftDirection};
+use std::{fs::File, io::Write, path::MAIN_SEPARATOR_STR, str::FromStr, sync::{atomic::Ordering, Arc}};
+use std::ops::RangeInclusive;
+use crate::{pivot_frequency_slope, slim_checkbox, Scrollscope};
 
 pub(crate) fn make_gui(instance: &mut Scrollscope, _async_executor: AsyncExecutor<Scrollscope>) -> Option<Box<dyn Editor>> {
     let params = instance.params.clone();
-    let samples = instance.samples.clone();
-    let aux_samples_1 = instance.aux_samples_1.clone();
-    let aux_samples_2 = instance.aux_samples_2.clone();
-    let aux_samples_3 = instance.aux_samples_3.clone();
-    let aux_samples_4 = instance.aux_samples_4.clone();
-    let aux_samples_5 = instance.aux_samples_5.clone();
-    let samples_2 = instance.samples_2.clone();
-    let aux_samples_1_2 = instance.aux_samples_1_2.clone();
-    let aux_samples_2_2 = instance.aux_samples_2_2.clone();
-    let aux_samples_3_2 = instance.aux_samples_3_2.clone();
-    let aux_samples_4_2 = instance.aux_samples_4_2.clone();
-    let aux_samples_5_2 = instance.aux_samples_5_2.clone();
-    let scrolling_beat_lines = instance.scrolling_beat_lines.clone();
+    let samples = instance.sample_buffer.clone();
+    let samples_2 = instance.sample_buffer_2.clone();
     let ontop = instance.focused_line_toggle.clone();
     let is_clipping = instance.is_clipping.clone();
     let sync_var = instance.sync_var.clone();
@@ -187,6 +174,15 @@ inactive_bg = 60,60,60");
         })
         .collect();
     let inactive_bg = Color32::from_rgb(t[0], t[1], t[2]);
+
+    // Setup highlights and other color variations ahead of time to save processing
+    let soften = 0.25;
+    let soft_primary = primary_line_color.linear_multiply(soften);
+    let soft_aux_1 =  user_aux_1.linear_multiply(soften);
+    let soft_aux_2 = user_aux_2.linear_multiply(soften);
+    let soft_aux_3 = user_aux_3.linear_multiply(soften);
+    let soft_aux_4 = user_aux_4.linear_multiply(soften);
+    let soft_aux_5 = user_aux_5.linear_multiply(soften);
     
     create_egui_editor(
         instance.params.editor_state.clone(),
@@ -229,6 +225,7 @@ inactive_bg = 60,60,60");
                 let mut scrolling_beat_line: Line = Line::new(PlotPoints::default());
                 let mut line: Line = Line::new(PlotPoints::default());
                 let mut line_2: Line = Line::new(PlotPoints::default());
+                /*
                 // Channel 1
                 let mut samples = samples.lock().unwrap();
                 let mut aux_samples_1 = aux_samples_1.lock().unwrap();
@@ -245,6 +242,7 @@ inactive_bg = 60,60,60");
                 let mut aux_samples_5_2 = aux_samples_5_2.lock().unwrap();
                 // Lines
                 let mut scrolling_beat_lines = scrolling_beat_lines.lock().unwrap();
+                */
                 let sr = sample_rate.clone();
                 // The entire "window" container
                 ui.vertical(|ui| {
@@ -332,21 +330,13 @@ Version 1.4.1");
                                 aux_line_5_2 = Line::new(PlotPoints::default());
                                 //scrolling_beat_line = Line::new(PlotPoints::default());
                                 line_2 = Line::new(PlotPoints::default());
-                                samples.clear();
-                                aux_samples_1.clear();
-                                aux_samples_2.clear();
-                                aux_samples_3.clear();
-                                aux_samples_4.clear();
-                                aux_samples_5.clear();
-                                samples_2.clear();
-                                aux_samples_1_2.clear();
-                                aux_samples_2_2.clear();
-                                aux_samples_3_2.clear();
-                                aux_samples_4_2.clear();
-                                aux_samples_5_2.clear();
-                                scrolling_beat_lines.clear();
                             }
                         }
+
+                        let scroll: usize = (sample_rate.load(Ordering::Relaxed) as usize / 1000.0 as usize) * params.scrollspeed.value() as usize;
+                        samples.update_internal_length(scroll);
+                        samples_2.update_internal_length(scroll);
+
                         if swap_response.clicked() {
                             let num = ontop.load(Ordering::SeqCst);
                             // This skips possible "OFF" lines when toggling
@@ -496,6 +486,7 @@ Version 1.4.1");
                     });
                 });
                 // Reverse our order for drawing if desired (I know this is "slow")
+                /*
                 if dir_var.load(Ordering::SeqCst) {
                     // Channel 1
                     samples.make_contiguous().reverse();
@@ -514,6 +505,7 @@ Version 1.4.1");
                     // Lines
                     scrolling_beat_lines.make_contiguous().reverse();
                 }
+                */
                 let mut final_primary_color: Color32 = Default::default();
                 let mut final_aux_line_color: Color32 = Default::default();
                 let mut final_aux_line_color_2: Color32 = Default::default();
@@ -522,60 +514,59 @@ Version 1.4.1");
                 let mut final_aux_line_color_5: Color32 = Default::default();
                 ui.allocate_ui(egui::Vec2::new(900.0, 380.0), |ui| {
                     // Fix our colors to focus on our line
-                    let lmult: f32 = 0.25;
                     match ontop.load(Ordering::SeqCst) {
                         0 => {
                             // Main unaffected
                             final_primary_color = primary_line_color;
-                            final_aux_line_color = user_aux_1.linear_multiply(lmult);
-                            final_aux_line_color_2 = user_aux_2.linear_multiply(lmult);
-                            final_aux_line_color_3 = user_aux_3.linear_multiply(lmult);
-                            final_aux_line_color_4 = user_aux_4.linear_multiply(lmult);
-                            final_aux_line_color_5 = user_aux_5.linear_multiply(lmult);
+                            final_aux_line_color = soft_aux_1;
+                            final_aux_line_color_2 = soft_aux_2;
+                            final_aux_line_color_3 = soft_aux_3;
+                            final_aux_line_color_4 = soft_aux_4;
+                            final_aux_line_color_5 = soft_aux_5;
                         }
                         1 => {
-                            // Aux unaffected
-                            final_primary_color = primary_line_color.linear_multiply(lmult);
+                            // aux unaffected
+                            final_primary_color = soft_primary;
                             final_aux_line_color = user_aux_1;
-                            final_aux_line_color_2 = user_aux_2.linear_multiply(lmult);
-                            final_aux_line_color_3 = user_aux_3.linear_multiply(lmult);
-                            final_aux_line_color_4 = user_aux_4.linear_multiply(lmult);
-                            final_aux_line_color_5 = user_aux_5.linear_multiply(lmult);
+                            final_aux_line_color_2 = soft_aux_2;
+                            final_aux_line_color_3 = soft_aux_3;
+                            final_aux_line_color_4 = soft_aux_4;
+                            final_aux_line_color_5 = soft_aux_5;
                         }
                         2 => {
-                            // Aux 2 unaffected
-                            final_primary_color = primary_line_color.linear_multiply(lmult);
-                            final_aux_line_color = user_aux_1.linear_multiply(lmult);
+                            // aux 2 unaffected
+                            final_primary_color = soft_primary;
+                            final_aux_line_color = soft_aux_1;
                             final_aux_line_color_2 = user_aux_2;
-                            final_aux_line_color_3 = user_aux_3.linear_multiply(lmult);
-                            final_aux_line_color_4 = user_aux_4.linear_multiply(lmult);
-                            final_aux_line_color_5 = user_aux_5.linear_multiply(lmult);
+                            final_aux_line_color_3 = soft_aux_3;
+                            final_aux_line_color_4 = soft_aux_4;
+                            final_aux_line_color_5 = soft_aux_5;
                         }
                         3 => {
-                            // Aux 3 unaffected
-                            final_primary_color = primary_line_color.linear_multiply(lmult);
-                            final_aux_line_color = user_aux_1.linear_multiply(lmult);
-                            final_aux_line_color_2 = user_aux_2.linear_multiply(lmult);
+                            // aux 3 unaffected
+                            final_primary_color = soft_primary;
+                            final_aux_line_color = soft_aux_1;
+                            final_aux_line_color_2 = soft_aux_2;
                             final_aux_line_color_3 = user_aux_3;
-                            final_aux_line_color_4 = user_aux_4.linear_multiply(lmult);
-                            final_aux_line_color_5 = user_aux_5.linear_multiply(lmult);
+                            final_aux_line_color_4 = soft_aux_4;
+                            final_aux_line_color_5 = soft_aux_5;
                         }
                         4 => {
-                            // Aux 4 unaffected
-                            final_primary_color = primary_line_color.linear_multiply(lmult);
-                            final_aux_line_color = user_aux_1.linear_multiply(lmult);
-                            final_aux_line_color_2 = user_aux_2.linear_multiply(lmult);
-                            final_aux_line_color_3 = user_aux_3.linear_multiply(lmult);
+                            // aux 4 unaffected
+                            final_primary_color = soft_primary;
+                            final_aux_line_color = soft_aux_1;
+                            final_aux_line_color_2 = soft_aux_2;
+                            final_aux_line_color_3 = soft_aux_3;
                             final_aux_line_color_4 = user_aux_4;
-                            final_aux_line_color_5 = user_aux_5.linear_multiply(lmult);
+                            final_aux_line_color_5 = soft_aux_5;
                         }
                         5 => {
-                            // Aux 5 unaffected
-                            final_primary_color = primary_line_color.linear_multiply(lmult);
-                            final_aux_line_color = user_aux_1.linear_multiply(lmult);
-                            final_aux_line_color_2 = user_aux_2.linear_multiply(lmult);
-                            final_aux_line_color_3 = user_aux_3.linear_multiply(lmult);
-                            final_aux_line_color_4 = user_aux_4.linear_multiply(lmult);
+                            // aux 5 unaffected
+                            final_primary_color = soft_primary;
+                            final_aux_line_color = soft_aux_1;
+                            final_aux_line_color_2 = soft_aux_2;
+                            final_aux_line_color_3 = soft_aux_3;
+                            final_aux_line_color_4 = soft_aux_4;
                             final_aux_line_color_5 = user_aux_5;
                         }
                         _ => {
@@ -585,65 +576,57 @@ Version 1.4.1");
                     // Show the frequency analyzer
                     if show_analyzer.load(Ordering::SeqCst) {
                         let mut shapes: Vec<egui::Shape> = vec![];
-                        let testme = samples.get(0);
-                        if testme.is_none() {
-                            nih_error!("samples doesn't have values");
-                        }
-                        let input_vd: VecDeque<f32> = add_vecdeques(&samples, &samples_2);
-                        let ax_vd: VecDeque<f32> = add_vecdeques(&aux_samples_1, &aux_samples_1_2);
-                        let ax_vd2: VecDeque<f32> = add_vecdeques(&aux_samples_2, &aux_samples_2_2);
-                        let ax_vd3: VecDeque<f32> = add_vecdeques(&aux_samples_3, &aux_samples_3_2);
-                        let ax_vd4: VecDeque<f32> = add_vecdeques(&aux_samples_4, &aux_samples_4_2);
-                        let ax_vd5: VecDeque<f32> = add_vecdeques(&aux_samples_5, &aux_samples_5_2);
+                        let scroll: usize = (sample_rate.load(Ordering::Relaxed) as usize / 1000.0 as usize) * params.scrollspeed.value() as usize;
+                        // Sample Buffer ONE calculations
                         // Compute our fast fourier transforms
-                        let mut buffer: Vec<Complex<f32>> = input_vd.iter().map(|&x| Complex::new(flush_denormal(x), 0.0)).collect();
+                        let mut buffer: Vec<Complex<f32>> = samples.get_complex_samples_with_length(0, scroll);
                         let buffer_len: usize = buffer.len();
                         let fft_plan: Arc<dyn Fft<f32>> = fft.lock().unwrap().plan_fft(buffer_len, FftDirection::Forward);
                         fft_plan.process(&mut buffer);
-                        let mut ax1: Vec<Complex<f32>> = ax_vd.iter().map(|&x| Complex::new(flush_denormal(x), 0.0)).collect();
+                        let mut ax1: Vec<Complex<f32>> = samples.get_complex_samples_with_length(1, scroll);
                         let ax1_len: usize = ax1.len();
                         let fft_plan: Arc<dyn Fft<f32>> = fft.lock().unwrap().plan_fft(ax1_len, FftDirection::Forward);
                         fft_plan.process(&mut ax1);
-                        let mut ax2: Vec<Complex<f32>> = ax_vd2.iter().map(|&x| Complex::new(flush_denormal(x), 0.0)).collect();
+                        let mut ax2: Vec<Complex<f32>> = samples.get_complex_samples_with_length(2, scroll);
                         let ax2_len: usize = ax2.len();
                         let fft_plan: Arc<dyn Fft<f32>> = fft.lock().unwrap().plan_fft(ax2_len, FftDirection::Forward);
                         fft_plan.process(&mut ax2);
-                        let mut ax3: Vec<Complex<f32>> = ax_vd3.iter().map(|&x| Complex::new(flush_denormal(x), 0.0)).collect();
+                        let mut ax3: Vec<Complex<f32>> = samples.get_complex_samples_with_length(3, scroll);
                         let ax3_len: usize = ax3.len();
                         let fft_plan: Arc<dyn Fft<f32>> = fft.lock().unwrap().plan_fft(ax3_len, FftDirection::Forward);
                         fft_plan.process(&mut ax3);
-                        let mut ax4: Vec<Complex<f32>> = ax_vd4.iter().map(|&x| Complex::new(flush_denormal(x), 0.0)).collect();
+                        let mut ax4: Vec<Complex<f32>> = samples.get_complex_samples_with_length(4, scroll);
                         let ax4_len: usize = ax4.len();
                         let fft_plan: Arc<dyn Fft<f32>> = fft.lock().unwrap().plan_fft(ax4_len, FftDirection::Forward);
                         fft_plan.process(&mut ax4);
-                        let mut ax5: Vec<Complex<f32>> = ax_vd5.iter().map(|&x| Complex::new(flush_denormal(x), 0.0)).collect();
+                        let mut ax5: Vec<Complex<f32>> = samples.get_complex_samples_with_length(5, scroll);
                         let ax5_len: usize = ax5.len();
                         let fft_plan: Arc<dyn Fft<f32>> = fft.lock().unwrap().plan_fft(ax5_len, FftDirection::Forward);
                         fft_plan.process(&mut ax5);
                         // Compute
                         let magnitudes: Vec<f32> = buffer.iter().map(|c| c.norm() as f32).collect();
                         let frequencies: Vec<f32> = (0..buffer_len / 2)
-                            .map(|i| i as f32 * sr.load(Ordering::SeqCst) / buffer_len as f32)
+                            .map(|i| i as f32 * sr.load(Ordering::Relaxed) / buffer_len as f32)
                             .collect();
                         let magnitudes_ax1: Vec<f32> = ax1.iter().map(|c| c.norm() as f32).collect();
                         let frequencies_ax1: Vec<f32> = (0..ax1_len / 2)
-                            .map(|i| i as f32 * sr.load(Ordering::SeqCst) / ax1_len as f32)
+                            .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax1_len as f32)
                             .collect();
                         let magnitudes_ax2: Vec<f32> = ax2.iter().map(|c| c.norm() as f32).collect();
                         let frequencies_ax2: Vec<f32> = (0..ax2_len / 2)
-                            .map(|i| i as f32 * sr.load(Ordering::SeqCst) / ax2_len as f32)
+                            .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax2_len as f32)
                             .collect();
                         let magnitudes_ax3: Vec<f32> = ax3.iter().map(|c| c.norm() as f32).collect();
                         let frequencies_ax3: Vec<f32> = (0..ax3_len / 2)
-                            .map(|i| i as f32 * sr.load(Ordering::SeqCst) / ax3_len as f32)
+                            .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax3_len as f32)
                             .collect();
                         let magnitudes_ax4: Vec<f32> = ax4.iter().map(|c| c.norm() as f32).collect();
                         let frequencies_ax4: Vec<f32> = (0..ax4_len / 2)
-                            .map(|i| i as f32 * sr.load(Ordering::SeqCst) / ax4_len as f32)
+                            .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax4_len as f32)
                             .collect();
                         let magnitudes_ax5: Vec<f32> = ax5.iter().map(|c| c.norm() as f32).collect();
                         let frequencies_ax5: Vec<f32> = (0..ax5_len / 2)
-                            .map(|i| i as f32 * sr.load(Ordering::SeqCst) / ax5_len as f32)
+                            .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax5_len as f32)
                             .collect();
                         // Scale for visibility
                         let db_scaler: f32 = 2.75;
@@ -2004,9 +1987,9 @@ Version 1.4.1");
                             ui.painter().extend(shapes);
                         }
                     } else {
-                        let mut sum_data = samples.clone();
-                        let mut sum_data_2 = samples_2.clone();
-                        let sbl: PlotPoints = scrolling_beat_lines
+                        let mut sum_data = samples.get_samples(0);
+                        let mut sum_data_2 = samples_2.get_samples(0);
+                        let sbl: PlotPoints = samples.get_samples(6)
                             .iter()
                             .enumerate()
                             .map(|(i, sample)| {
@@ -2025,7 +2008,7 @@ Version 1.4.1");
                         // CHANNEL 0
                         /////////////////////////////////////////////////////////////////////////////////////////
                         // Primary Input
-                        let data: PlotPoints = samples
+                        let data: PlotPoints = samples.get_samples(0)
                             .iter()
                             .enumerate()
                             .map(|(i, sample)| {
@@ -2045,7 +2028,7 @@ Version 1.4.1");
                             .color(primary_line_color)
                             .stroke(Stroke::new(1.1, primary_line_color));
                         // Aux inputs
-                        let aux_data: PlotPoints = aux_samples_1
+                        let aux_data: PlotPoints = samples.get_samples(1)
                             .iter()
                             .enumerate()
                             .map(|(i, sample)| {
@@ -2066,7 +2049,7 @@ Version 1.4.1");
                         aux_line = Line::new(aux_data)
                             .color(user_aux_1)
                             .stroke(Stroke::new(1.0, user_aux_1));
-                        let aux_data_2: PlotPoints = aux_samples_2
+                        let aux_data_2: PlotPoints = samples.get_samples(2)
                             .iter()
                             .enumerate()
                             .map(|(i, sample)| {
@@ -2087,7 +2070,7 @@ Version 1.4.1");
                         aux_line_2 = Line::new(aux_data_2)
                             .color(user_aux_2)
                             .stroke(Stroke::new(1.0, user_aux_2));
-                        let aux_data_3: PlotPoints = aux_samples_3
+                        let aux_data_3: PlotPoints = samples.get_samples(3)
                             .iter()
                             .enumerate()
                             .map(|(i, sample)| {
@@ -2108,7 +2091,7 @@ Version 1.4.1");
                         aux_line_3 = Line::new(aux_data_3)
                             .color(user_aux_3)
                             .stroke(Stroke::new(1.0, user_aux_3));
-                        let aux_data_4: PlotPoints = aux_samples_4
+                        let aux_data_4: PlotPoints = samples.get_samples(4)
                             .iter()
                             .enumerate()
                             .map(|(i, sample)| {
@@ -2129,7 +2112,7 @@ Version 1.4.1");
                         aux_line_4 = Line::new(aux_data_4)
                             .color(user_aux_4)
                             .stroke(Stroke::new(1.0, user_aux_4));
-                        let aux_data_5: PlotPoints = aux_samples_5
+                        let aux_data_5: PlotPoints = samples.get_samples(5)
                             .iter()
                             .enumerate()
                             .map(|(i, sample)| {
@@ -2168,7 +2151,7 @@ Version 1.4.1");
                         // CHANNEL 1
                         /////////////////////////////////////////////////////////////////////////////////////////
                         // Primary Input
-                        let data_2: PlotPoints = samples_2
+                        let data_2: PlotPoints = samples_2.get_samples(0)
                             .iter()
                             .enumerate()
                             .map(|(i, sample)| {
@@ -2189,7 +2172,7 @@ Version 1.4.1");
                             .stroke(Stroke::new(1.1, primary_line_color));
                         // Aux inputs
                         #[allow(non_snake_case)]
-                        let aux_data__2: PlotPoints = aux_samples_1_2
+                        let aux_data__2: PlotPoints = samples_2.get_samples(1)
                             .iter()
                             .enumerate()
                             .map(|(i, sample)| {
@@ -2210,7 +2193,7 @@ Version 1.4.1");
                         aux_line__2 = Line::new(aux_data__2)
                             .color(user_aux_1)
                             .stroke(Stroke::new(1.0, user_aux_1));
-                        let aux_data_2_2: PlotPoints = aux_samples_2_2
+                        let aux_data_2_2: PlotPoints = samples_2.get_samples(2)
                             .iter()
                             .enumerate()
                             .map(|(i, sample)| {
@@ -2231,7 +2214,7 @@ Version 1.4.1");
                         aux_line_2_2 = Line::new(aux_data_2_2)
                             .color(user_aux_2)
                             .stroke(Stroke::new(1.0, user_aux_2));
-                        let aux_data_3_2: PlotPoints = aux_samples_3_2
+                        let aux_data_3_2: PlotPoints = samples_2.get_samples(3)
                             .iter()
                             .enumerate()
                             .map(|(i, sample)| {
@@ -2252,7 +2235,7 @@ Version 1.4.1");
                         aux_line_3_2 = Line::new(aux_data_3_2)
                             .color(user_aux_3)
                             .stroke(Stroke::new(1.0, user_aux_3));
-                        let aux_data_4_2: PlotPoints = aux_samples_4_2
+                        let aux_data_4_2: PlotPoints = samples_2.get_samples(4)
                             .iter()
                             .enumerate()
                             .map(|(i, sample)| {
@@ -2273,7 +2256,7 @@ Version 1.4.1");
                         aux_line_4_2 = Line::new(aux_data_4_2)
                             .color(user_aux_4)
                             .stroke(Stroke::new(1.0, user_aux_4));
-                        let aux_data_5_2: PlotPoints = aux_samples_5_2
+                        let aux_data_5_2: PlotPoints = samples_2.get_samples(5)
                             .iter()
                             .enumerate()
                             .map(|(i, sample)| {
@@ -2323,6 +2306,12 @@ Version 1.4.1");
                             .allow_drag(false)
                             // Blank out the X axis labels
                             .x_axis_formatter(|_, _range: &RangeInclusive<f64>| String::new())
+                            .x_grid_spacer(move |_| {
+                                vec![
+                                   // 100s
+                                   //GridMark { value: 100.0, step_size: 100.0 },
+                                ]
+                            })
                             // Format hover to blank or value
                             .label_formatter(|_, _| "".to_owned())
                             .show(ui, |plot_ui| {
@@ -2721,7 +2710,7 @@ Version 1.4.1");
                 });
                 // Floating buttons
                 if !show_analyzer.load(Ordering::Relaxed) {
-                    let mut stereo_switch_ui = ui.new_child(UiBuilder::new());
+                    let mut stereo_switch_ui = ui.new_child(UiBuilder::new().max_rect(Rect { min: Pos2 { x: 930.0, y: 30.0 }, max: Pos2 { x: 1040.0, y: 40.0 } }));
                     //    Rect { min: Pos2 { x: 930.0, y: 30.0 }, max: Pos2 { x: 1040.0, y: 40.0 } },
                     //    Layout::centered_and_justified(egui::Direction::LeftToRight)
                     //);
@@ -2732,6 +2721,7 @@ Version 1.4.1");
                         }).inner;
                 }
                 // Put things back after drawing so process() isn't broken
+                /*
                 if dir_var.load(Ordering::SeqCst) {
                     samples.make_contiguous().reverse();
                     aux_samples_1.make_contiguous().reverse();
@@ -2747,6 +2737,7 @@ Version 1.4.1");
                     aux_samples_5_2.make_contiguous().reverse();
                     scrolling_beat_lines.make_contiguous().reverse();
                 }
+                */
             });
         },
     )

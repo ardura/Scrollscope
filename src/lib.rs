@@ -1,104 +1,192 @@
-use atomic_float::{AtomicF32};
-use itertools::{izip};
-use nih_plug::{prelude::*};
+use atomic_float::AtomicF32;
+use itertools::izip;
+use nih_plug::prelude::*;
 use nih_plug_egui::EguiState;
 use rustfft::{num_complex::Complex, FftPlanner};
-use std::{env, sync::{atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering}, Arc}};
-use std::sync::Mutex;
+use std::{
+    env,
+    sync::{
+        atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering},
+        Arc, Mutex, RwLock,
+    },
+};
 
 mod slim_checkbox;
 mod scrollscope_gui;
 
 /**************************************************
- * Scrollscope v1.4.1 by Ardura
+ * Scrollscope v1.4.1 by Ardura - Optimized Version
  * "A simple scrolling Oscilloscope has become complex now"
- *
- * Build with: cargo xtask bundle scrollscope --profile release
- * Debug with: cargo xtask bundle scrollscope --profile profiling
- * 
- * If you don't want/need the standalone version you can save time by only compiling the VST + CLAP with "--lib"
- * cargo xtask bundle scrollscope --profile release --lib
  * ************************************************/
 
-const MAX_BUFFER_SIZE: usize = 48000;
-const NUM_CHANNELS: usize = 7; // Main + 5 aux + beat lines
-
-struct LockFreeCircularBuffer {
-    internal_length: AtomicUsize,
-    buffers: Vec<Box<[AtomicF32]>>, // Heap-allocated storage
-    write_indices: [AtomicUsize; NUM_CHANNELS],
+// Calculate buffer size dynamically based on sample rate and max display time
+fn calculate_buffer_size(sample_rate: f32, max_display_ms: f32) -> usize {
+    ((sample_rate * max_display_ms) / 1000.0).ceil() as usize
 }
 
-impl LockFreeCircularBuffer {
+const NUM_CHANNELS: usize = 8; // Main + 5 aux + beat lines + sum
+const MAX_DISPLAY_MS: f32 = 1000.0; // Maximum display time in milliseconds
+
+// Channel data container
+struct ChannelBuffer {
+    data: Vec<f32>,
+    write_index: usize,
+}
+
+impl ChannelBuffer {
     fn new(size: usize) -> Self {
-        /*
         Self {
-            internal_length: AtomicUsize::new(size),
-            buffers: std::array::from_fn(|_| std::array::from_fn(|_| AtomicF32::new(0.0))),
-            write_indices: std::array::from_fn(|_| AtomicUsize::new(0)),
-        }
-        */
-        Self {
-            internal_length: AtomicUsize::new(size),
-            buffers: (0..NUM_CHANNELS)
-                .map(|_| {
-                    (0..MAX_BUFFER_SIZE)
-                        .map(|_| AtomicF32::new(0.0))
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice()
-                })
-                .collect(), // Collect into a Vec<Box<[AtomicF32]>>
-            write_indices: std::array::from_fn(|_| AtomicUsize::new(0)),
+            data: vec![0.0; size],
+            write_index: 0,
         }
     }
-    
-    fn update_sample(&self, channel: usize, index: usize, sample: f32) {
-        self.buffers[channel][index].store(sample, Ordering::Relaxed);
+
+    fn resize(&mut self, new_size: usize) {
+        if new_size > self.data.len() {
+            self.data.resize(new_size, 0.0);
+        }
+        // Don't shrink - avoid reallocation
     }
 
-    fn update_internal_length(&self, new_length: usize) {
-        self.internal_length.store(new_length, Ordering::Relaxed);
+    fn push_sample(&mut self, sample: f32, buffer_len: usize) {
+        self.data[self.write_index % buffer_len] = sample;
+        self.write_index = (self.write_index + 1) % buffer_len;
     }
 
-    fn push_sample(&self, channel: usize, sample: f32) {
-        if channel >= NUM_CHANNELS { return; }
-
-        let write_idx = self.write_indices[channel].fetch_add(1, Ordering::Relaxed) % self.internal_length.load(Ordering::Relaxed);
-        self.buffers[channel][write_idx].store(sample, Ordering::Relaxed);
+    fn update_sample(&mut self, index: usize, sample: f32) {
+        if index < self.data.len() {
+            self.data[index] = sample;
+        }
     }
 
-    fn get_sample(&self, channel: usize, index: usize) -> Option<f32> {
-        return Option::Some(self.buffers[channel][index].load(Ordering::Relaxed))
+    fn get_sample(&self, index: usize) -> Option<f32> {
+        if index < self.data.len() {
+            Some(self.data[index])
+        } else {
+            None
+        }
     }
 
-    fn get_samples(&self, channel: usize) -> Vec<f32> {
-        if channel >= NUM_CHANNELS { return Vec::new(); }
-
-        let write_idx = self.write_indices[channel].load(Ordering::Relaxed);
+    fn get_samples(&self, buffer_len: usize) -> Vec<f32> {
+        let mut samples = Vec::with_capacity(buffer_len);
+        let start_idx = self.write_index;
         
-        let local_int_len = self.internal_length.load(Ordering::Relaxed);
-        let mut samples = Vec::with_capacity(local_int_len);
-        for i in 0..local_int_len {
-            let idx = (write_idx + i) % local_int_len;
-            samples.push(self.buffers[channel][idx].load(Ordering::Relaxed));
+        for i in 0..buffer_len {
+            let idx = (start_idx + i) % buffer_len;
+            samples.push(self.data[idx]);
         }
+        
         samples
     }
 
-    fn get_complex_samples_with_length(&self, channel: usize, length: usize) -> Vec<Complex<f32>> {
-        if channel >= NUM_CHANNELS { return Vec::new(); }
-        let local_int_len = self.internal_length.load(Ordering::Relaxed);
-
-        let write_idx = self.write_indices[channel].load(Ordering::Relaxed);
+    fn get_complex_samples(&self, length: usize, buffer_len: usize) -> Vec<Complex<f32>> {
+        let mut complex_samples = Vec::with_capacity(length.min(buffer_len));
+        let start_idx = self.write_index;
         
-        let mut complex_samples = Vec::with_capacity(length.min(local_int_len));
-        for i in 0..length.min(local_int_len) {
-            let idx = (write_idx + i) % local_int_len;
-            let sample = self.buffers[channel][idx].load(Ordering::Relaxed);
-            
+        for i in 0..length.min(buffer_len) {
+            let idx = (start_idx + i) % buffer_len;
+            let sample = self.data[idx];
             complex_samples.push(Complex::new(flush_denormal_bits(sample), 0.0));
         }
+        
         complex_samples
+    }
+}
+
+// More efficient buffer implementation
+struct OptimizedBuffer {
+    internal_length: AtomicUsize,
+    // Use RwLock for better read concurrency
+    buffers: RwLock<Vec<ChannelBuffer>>,
+}
+
+impl OptimizedBuffer {
+    fn new(size: usize) -> Self {
+        let mut channels = Vec::with_capacity(NUM_CHANNELS);
+        for _ in 0..NUM_CHANNELS {
+            channels.push(ChannelBuffer::new(size));
+        }
+        
+        Self {
+            internal_length: AtomicUsize::new(size),
+            buffers: RwLock::new(channels),
+        }
+    }
+    
+    fn update_internal_length(&self, new_length: usize) {
+        self.internal_length.store(new_length, Ordering::Release);
+        let mut buffers = self.buffers.write().unwrap();
+        for channel in buffers.iter_mut() {
+            channel.resize(new_length);
+        }
+    }
+
+    // Batch process multiple samples with a single lock acquisition
+    fn push_samples(&self, channel_data: &[(usize, f32)]) {
+        let buffer_len = self.internal_length.load(Ordering::Acquire);
+        let mut buffers = self.buffers.write().unwrap();
+        
+        for &(channel, sample) in channel_data {
+            if channel < NUM_CHANNELS {
+                buffers[channel].push_sample(sample, buffer_len);
+            }
+        }
+    }
+
+    fn push_sample(&self, channel: usize, sample: f32) {
+        if channel >= NUM_CHANNELS {
+            return;
+        }
+
+        let buffer_len = self.internal_length.load(Ordering::Acquire);
+        let mut buffers = self.buffers.write().unwrap();
+        buffers[channel].push_sample(sample, buffer_len);
+    }
+
+    fn update_sample(&self, channel: usize, index: usize, sample: f32) {
+        if channel >= NUM_CHANNELS {
+            return;
+        }
+
+        let buffers = self.buffers.write().unwrap();
+        if let Some(buffer) = buffers.get(channel) {
+            if index < buffer.data.len() {
+                // Use const cast to avoid double locking
+                unsafe {
+                    let buffer_ptr = buffer as *const ChannelBuffer as *mut ChannelBuffer;
+                    (*buffer_ptr).update_sample(index, sample);
+                }
+            }
+        }
+    }
+
+    fn get_sample(&self, channel: usize, index: usize) -> Option<f32> {
+        if channel >= NUM_CHANNELS {
+            return None;
+        }
+
+        let buffers = self.buffers.read().unwrap();
+        buffers[channel].get_sample(index)
+    }
+
+    fn get_samples(&self, channel: usize) -> Vec<f32> {
+        if channel >= NUM_CHANNELS {
+            return Vec::new();
+        }
+
+        let buffer_len = self.internal_length.load(Ordering::Acquire);
+        let buffers = self.buffers.read().unwrap();
+        buffers[channel].get_samples(buffer_len)
+    }
+
+    fn get_complex_samples_with_length(&self, channel: usize, length: usize) -> Vec<Complex<f32>> {
+        if channel >= NUM_CHANNELS {
+            return Vec::new();
+        }
+
+        let buffer_len = self.internal_length.load(Ordering::Acquire);
+        let buffers = self.buffers.read().unwrap();
+        buffers[channel].get_complex_samples(length, buffer_len)
     }
 }
 
@@ -111,27 +199,25 @@ pub enum BeatSync {
 pub struct Scrollscope {
     params: Arc<ScrollscopeParams>,
 
-    // Counter for scaling sample skipping
+    // Counter for scaling sample skipping - use a local counter to reduce atomic ops
     skip_counter: Arc<AtomicI32>,
     focused_line_toggle: Arc<AtomicU8>,
     is_clipping: Arc<AtomicF32>,
     direction: Arc<AtomicBool>,
-    enable_main: Arc<AtomicBool>,
-    enable_aux_1: Arc<AtomicBool>,
-    enable_aux_2: Arc<AtomicBool>,
-    enable_aux_3: Arc<AtomicBool>,
-    enable_aux_4: Arc<AtomicBool>,
-    enable_aux_5: Arc<AtomicBool>,
+    
+    // Channel visibility flags
+    channel_enabled: [Arc<AtomicBool>; 7], // main + 5 aux + sum
+
+    // Gui flags
     enable_sum: Arc<AtomicBool>,
     enable_guidelines: Arc<AtomicBool>,
     enable_bar_mode: Arc<AtomicBool>,
+    
+    // Data holding values - optimized buffer implementation
+    sample_buffer: Arc<OptimizedBuffer>,
+    sample_buffer_2: Arc<OptimizedBuffer>,
 
-    // Data holding values
-    sample_buffer: Arc<LockFreeCircularBuffer>,
-    // Stereo field uses this second set
-    sample_buffer_2: Arc<LockFreeCircularBuffer>,
-
-    // Syncing for beats
+    // Syncing for beats - cached to reduce atomic ops
     sync_var: Arc<AtomicBool>,
     alt_sync: Arc<AtomicBool>,
     in_place_index: Arc<AtomicI32>,
@@ -142,7 +228,6 @@ pub struct Scrollscope {
     fft: Arc<Mutex<FftPlanner<f32>>>,
     show_analyzer: Arc<AtomicBool>,
     en_filled_lines: Arc<AtomicBool>,
-
     en_filled_osc: Arc<AtomicBool>,
 
     // Stereo view
@@ -150,6 +235,10 @@ pub struct Scrollscope {
 
     sample_rate: Arc<AtomicF32>,
     prev_skip: Arc<AtomicI32>,
+    
+    // Cache frequently accessed parameters
+    gain_cache: Arc<AtomicF32>,
+    h_scale_cache: Arc<AtomicI32>,
 }
 
 #[derive(Params)]
@@ -177,24 +266,33 @@ struct ScrollscopeParams {
 
 impl Default for Scrollscope {
     fn default() -> Self {
+        // Initialize with reasonable defaults based on 44.1kHz
+        let initial_buffer_size = calculate_buffer_size(44100.0, MAX_DISPLAY_MS);
+        
         Self {
             params: Arc::new(ScrollscopeParams::default()),
             skip_counter: Arc::new(AtomicI32::new(0)),
             focused_line_toggle: Arc::new(AtomicU8::new(0)),
             direction: Arc::new(AtomicBool::new(false)),
             is_clipping: Arc::new(AtomicF32::new(0.0)),
-            enable_main: Arc::new(AtomicBool::new(true)),
-            enable_aux_1: Arc::new(AtomicBool::new(false)),
-            enable_aux_2: Arc::new(AtomicBool::new(false)),
-            enable_aux_3: Arc::new(AtomicBool::new(false)),
-            enable_aux_4: Arc::new(AtomicBool::new(false)),
-            enable_aux_5: Arc::new(AtomicBool::new(false)),
+            
+            // Replace individual AtomicBools with an array for simpler access
+            channel_enabled: [
+                Arc::new(AtomicBool::new(true)),  // main
+                Arc::new(AtomicBool::new(false)), // aux_1
+                Arc::new(AtomicBool::new(false)), // aux_2
+                Arc::new(AtomicBool::new(false)), // aux_3
+                Arc::new(AtomicBool::new(false)), // aux_4
+                Arc::new(AtomicBool::new(false)), // aux_5
+                Arc::new(AtomicBool::new(true)),  // sum
+            ],
+
             enable_sum: Arc::new(AtomicBool::new(true)),
             enable_guidelines: Arc::new(AtomicBool::new(true)),
             enable_bar_mode: Arc::new(AtomicBool::new(false)),
             
-            sample_buffer: Arc::new(LockFreeCircularBuffer::new(130)),
-            sample_buffer_2: Arc::new(LockFreeCircularBuffer::new(130)),
+            sample_buffer: Arc::new(OptimizedBuffer::new(initial_buffer_size)),
+            sample_buffer_2: Arc::new(OptimizedBuffer::new(initial_buffer_size)),
 
             sync_var: Arc::new(AtomicBool::new(false)),
             alt_sync: Arc::new(AtomicBool::new(false)),
@@ -208,6 +306,10 @@ impl Default for Scrollscope {
             stereo_view: Arc::new(AtomicBool::new(false)),
             sample_rate: Arc::new(AtomicF32::new(44100.0)),
             prev_skip: Arc::new(AtomicI32::new(24)),
+            
+            // Cache parameters for faster access
+            gain_cache: Arc::new(AtomicF32::new(1.0)),
+            h_scale_cache: Arc::new(AtomicI32::new(24)),
         }
     }
 }
@@ -233,7 +335,7 @@ impl Default for ScrollscopeParams {
             .with_string_to_value(formatters::s2v_f32_gain_to_db()),
 
             // scrollspeed parameter
-            scrollspeed: FloatParam::new("Length", 100.0, FloatRange::Skewed { min: 1.0, max: 1000.0 , factor: 0.33})
+            scrollspeed: FloatParam::new("Length", 100.0, FloatRange::Skewed { min: 1.0, max: 1000.0, factor: 0.33 })
                 .with_unit(" ms")
                 .with_step_size(1.0),
 
@@ -255,9 +357,7 @@ impl Plugin for Scrollscope {
 
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    // This looks like it's flexible for running the plugin in mono or stereo
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
-        // Inputs,Outputs,sidechain,No Idea but needed
         AudioIOLayout {
             main_input_channels: NonZeroU32::new(2),
             main_output_channels: NonZeroU32::new(2),
@@ -288,9 +388,18 @@ impl Plugin for Scrollscope {
     fn initialize(
         &mut self,
         _audio_io_layout: &AudioIOLayout,
-        _buffer_config: &BufferConfig,
+        buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
+        // Update sample rate and buffer size on initialization
+        let sample_rate = buffer_config.sample_rate;
+        self.sample_rate.store(sample_rate, Ordering::Release);
+        
+        // Calculate appropriate buffer size based on sample rate and max display time
+        let buffer_size = calculate_buffer_size(sample_rate, MAX_DISPLAY_MS);
+        self.sample_buffer.update_internal_length(buffer_size);
+        self.sample_buffer_2.update_internal_length(buffer_size);
+        
         true
     }
 
@@ -301,429 +410,425 @@ impl Plugin for Scrollscope {
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         // Only process if the GUI is open
-        if self.params.editor_state.is_open() {
-            let sample_rate: f32 = context.transport().sample_rate;
-            if sample_rate != self.sample_rate.load(Ordering::Relaxed) {
-                self.sample_rate.store(sample_rate, Ordering::Relaxed);
-            }
-            // Reset this every buffer process
-            self.skip_counter.store(0, Ordering::SeqCst);
-
-            // Get iterators outside the loop
-            // These are immutable to not break borrows and the .to_iter() things that return borrows
-            let raw_buffer = buffer.as_slice_immutable();
-            let aux_0 = aux.inputs[0].as_slice_immutable();
-            let aux_1 = aux.inputs[1].as_slice_immutable();
-            let aux_2 = aux.inputs[2].as_slice_immutable();
-            let aux_3 = aux.inputs[3].as_slice_immutable();
-            let aux_4 = aux.inputs[4].as_slice_immutable();
-
-            if !self.show_analyzer.load(Ordering::SeqCst) {
-                let channels = [0,1];
-                //                                                             [          CHANNEL         ]
-                // Iterate over all inputs at the same time. they are in form [[[left, right],[left,right]],...]
-                for (b0, ax0, ax1, ax2, ax3, ax4, channel) in
-                    izip!(raw_buffer, aux_0, aux_1, aux_2, aux_3, aux_4, channels)
-                {
-                    let current_beat: f64 = context.transport().pos_beats().unwrap();
-                    let temp_current_beat: f64 = (current_beat * 10000.0 as f64).round() / 10000.0 as f64;
-                    let offset: i64 = 1000;
-                    let sample_pos: i64;
-                    let sample_pos_round: f64;
-                    let mut time_seconds: f64 = 0.0;
-                    let beat_length_seconds: f64;
-                    let mut expected_beat_times: Vec<f64> = Vec::new();
-                    let tolerance: f64 = 0.021;
-                    let mut is_on_beat: bool = false;
-                    if self.alt_sync.load(Ordering::SeqCst) {
-                        sample_pos = context.transport().pos_samples().unwrap() + offset;
-                        sample_pos_round = (sample_pos as f64 * 1000.0 as f64).round() / 1000.0 as f64;
-                        time_seconds = sample_pos_round as f64 / self.sample_rate.load(Ordering::SeqCst) as f64;
-                        beat_length_seconds = 60.0 / context.transport().tempo.unwrap();
-                        expected_beat_times = (0..).map(|i| i as f64 * beat_length_seconds).take_while(|&t| t < time_seconds).collect();
-                        is_on_beat = expected_beat_times.iter().any(|&beat_time| (time_seconds - beat_time).abs() < tolerance);
-                        if context.transport().playing && is_on_beat
-                        {
-                            self.add_beat_line.store(true, Ordering::SeqCst);
-                        }
-                    } else if temp_current_beat % 1.0 == 0.0 && context.transport().playing {
-                        self.add_beat_line.store(true, Ordering::SeqCst);
-                    }
-                    // Beat syncing control
-                    if self.sync_var.load(Ordering::SeqCst) {
-                        if self.alt_sync.load(Ordering::SeqCst) {
-                            if context.transport().playing {
-                                match self.params.sync_timing.value() {
-                                    BeatSync::Bar => {
-                                        let is_on_bar = expected_beat_times.iter().any(|&beat_time| (time_seconds - (beat_time * 4.0)).abs() < tolerance);
-                                        if is_on_bar {
-                                            if self.beat_threshold.load(Ordering::SeqCst) == 0 {
-                                                self.in_place_index.store(0, Ordering::SeqCst);
-                                                self.beat_threshold.fetch_add(1, Ordering::SeqCst);
-                                            }
-                                        } else {
-                                            if self.beat_threshold.load(Ordering::SeqCst) > 0 {
-                                                self.beat_threshold.store(0, Ordering::SeqCst);
-                                            }
-                                        }
-                                    },
-                                    BeatSync::Beat => {
-                                        if is_on_beat {
-                                            if self.beat_threshold.load(Ordering::SeqCst) == 0 {
-                                                self.in_place_index.store(0, Ordering::SeqCst);
-                                                self.beat_threshold.fetch_add(1, Ordering::SeqCst);
-                                            }
-                                        } else {
-                                            if self.beat_threshold.load(Ordering::SeqCst) > 0 {
-                                                self.beat_threshold.store(0, Ordering::SeqCst);
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                self.in_place_index.store(0, Ordering::SeqCst);
-                            }
-                        } else {
-                            const EPSILON: f64 = 0.0001;
-                            // Works in FL Studio but not other daws, hence the previous couple of lines
-                            match self.params.sync_timing.value() {
-                                BeatSync::Bar => {
-                                    //temp_current_beat % 4.0 == 0.0
-                                    if (temp_current_beat % 4.0) < EPSILON {
-                                        // Reset our index to the sample vecdeques
-                                        //self.in_place_index = Arc::new(Mutex::new(0));
-                                        self.in_place_index.store(0, Ordering::SeqCst);
-                                        self.skip_counter.store(0, Ordering::SeqCst);
-                                    }
-                                }
-                                BeatSync::Beat => {
-                                    //temp_current_beat % 1.0 == 0.0
-                                    if (temp_current_beat % 1.0) < EPSILON {
-                                        // Reset our index to the sample vecdeques
-                                        //self.in_place_index = Arc::new(Mutex::new(0));
-                                        self.in_place_index.store(0, Ordering::SeqCst);
-                                        self.skip_counter.store(0, Ordering::SeqCst);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Reset the right side skipping getting out of control in stereo mode
-                    //if channel == 1 {
-                    //    self.skip_counter.store(0, Ordering::SeqCst);
-                    //}
-
-                    // Scrollscope is running as a single channel through here
-                    for (
-                        sample,
-                        aux_sample_1,
-                        aux_sample_2,
-                        aux_sample_3,
-                        aux_sample_4,
-                        aux_sample_5,
-                    ) in izip!(
-                        b0.iter(),
-                        ax0.iter(),
-                        ax1.iter(),
-                        ax2.iter(),
-                        ax3.iter(),
-                        ax4.iter(),
-                    ) {
-                        // Only grab X(skip_counter) samples to "optimize"
-                        if self.skip_counter.load(Ordering::SeqCst) % self.params.h_scale.value() == 0 {
-                            let current_gain = self.params.free_gain.smoothed.next();
-                            // Apply gain to main signal
-                            let visual_main_sample: f32 = sample * current_gain;
-                            // Apply gain to sidechains if it isn't doubled up/cloned (FL Studio does this)
-                            let visual_aux_sample_1 = if aux_sample_1 != sample {
-                                aux_sample_1 * current_gain
-                            } else {
-                                0.0
-                            };
-                            let visual_aux_sample_2 = if aux_sample_2 != sample {
-                                aux_sample_2 * current_gain
-                            } else {
-                                0.0
-                            };
-                            let visual_aux_sample_3 = if aux_sample_3 != sample {
-                                aux_sample_3 * current_gain
-                            } else {
-                                0.0
-                            };
-                            let visual_aux_sample_4 = if aux_sample_4 != sample {
-                                aux_sample_4 * current_gain
-                            } else {
-                                0.0
-                            };
-                            let visual_aux_sample_5 = if aux_sample_5 != sample {
-                                aux_sample_5 * current_gain
-                            } else {
-                                0.0
-                            };
-                            // Set clipping flag if absolute gain over 1
-                            if visual_main_sample.abs() > 1.0
-                                || visual_aux_sample_1.abs() > 1.0
-                                || visual_aux_sample_2.abs() > 1.0
-                                || visual_aux_sample_3.abs() > 1.0
-                                || visual_aux_sample_4.abs() > 1.0
-                                || visual_aux_sample_5.abs() > 1.0
-                            {
-                                self.is_clipping.store(120.0, Ordering::Relaxed);
-                            }
-                            
-                            
-                            /*
-                            let mut guard;
-                            let mut aux_guard;
-                            let mut aux_guard_2;
-                            let mut aux_guard_3;
-                            let mut aux_guard_4;
-                            let mut aux_guard_5;
-                            
-                            if channel == 0 {
-                                // Update our main samples vector for oscilloscope drawing
-                                guard = self.samples.lock().unwrap();
-                                // Update our sidechain samples vector for oscilloscope drawing
-                                aux_guard = self.aux_samples_1.lock().unwrap();
-                                aux_guard_2 = self.aux_samples_2.lock().unwrap();
-                                aux_guard_3 = self.aux_samples_3.lock().unwrap();
-                                aux_guard_4 = self.aux_samples_4.lock().unwrap();
-                                aux_guard_5 = self.aux_samples_5.lock().unwrap();
-                            } else {
-                                // Update our main samples vector for oscilloscope drawing
-                                guard = self.samples_2.lock().unwrap();
-                                // Update our sidechain samples vector for oscilloscope drawing
-                                aux_guard = self.aux_samples_1_2.lock().unwrap();
-                                aux_guard_2 = self.aux_samples_2_2.lock().unwrap();
-                                aux_guard_3 = self.aux_samples_3_2.lock().unwrap();
-                                aux_guard_4 = self.aux_samples_4_2.lock().unwrap();
-                                aux_guard_5 = self.aux_samples_5_2.lock().unwrap();
-                            }
-                            
-                            let mut sbl_guard = self.scrolling_beat_lines.lock().unwrap();
-                            */
-                            // If beat sync is on, we need to process changes in place
-                            if self.sync_var.load(Ordering::SeqCst) {
-                                // Access the in place index
-                                let ipi_index: usize = self.in_place_index.load(Ordering::SeqCst) as usize;
-                                // If we add a beat line, also clean all VecDeques past this index to line them up
-                                if self.add_beat_line.load(Ordering::SeqCst) {
-                                    if self.stereo_view.load(Ordering::SeqCst) {
-                                        self.sample_buffer.push_sample(6, 2.1);
-                                        self.sample_buffer.push_sample(6, -2.1);
-                                    } else {
-                                        self.sample_buffer.push_sample(6, 1.0);
-                                        self.sample_buffer.push_sample(6, -1.0);
-                                    }
-                                    self.add_beat_line.store(false, Ordering::SeqCst);
-                                    if self.alt_sync.load(Ordering::SeqCst) && self.params.sync_timing.value() == BeatSync::Beat {
-                                        // Fix random crash where disable and enable sync attempts drain on unknown index
-                                        /*
-                                        if guard.get(ipi_index).is_some() {
-                                            // This removes extra stuff on the right (jitter)
-                                            guard.drain(ipi_index..);
-                                            aux_guard.drain(ipi_index..);
-                                            aux_guard_2.drain(ipi_index..);
-                                            aux_guard_3.drain(ipi_index..);
-                                            aux_guard_4.drain(ipi_index..);
-                                            aux_guard_5.drain(ipi_index..);
-                                        }
-                                        */
-                                    }
-                                } else {
-                                    self.sample_buffer.push_sample(6,0.0);
-                                }
-
-                                // Check if our indexes exists
-                                if self.sample_buffer.get_sample(0, ipi_index).is_some() {
-                                    // Modify our index since it exists (this compensates for scale/sample changes)
-                                    self.sample_buffer.update_sample(0, ipi_index, visual_main_sample);
-                                }
-                                if self.sample_buffer.get_sample(1, ipi_index).is_some() {
-                                    // Modify our index since it exists (this compensates for scale/sample changes)
-                                    self.sample_buffer.update_sample(1, ipi_index, visual_aux_sample_1);
-                                }
-                                if self.sample_buffer.get_sample(2, ipi_index).is_some() {
-                                    // Modify our index since it exists (this compensates for scale/sample changes)
-                                    self.sample_buffer.update_sample(2, ipi_index, visual_aux_sample_2);
-                                }
-                                if self.sample_buffer.get_sample(3, ipi_index).is_some() {
-                                    // Modify our index since it exists (this compensates for scale/sample changes)
-                                    self.sample_buffer.update_sample(3, ipi_index, visual_aux_sample_3);
-                                }
-                                if self.sample_buffer.get_sample(4, ipi_index).is_some() {
-                                    // Modify our index since it exists (this compensates for scale/sample changes)
-                                    self.sample_buffer.update_sample(4, ipi_index, visual_aux_sample_4);
-                                }
-                                if self.sample_buffer.get_sample(5, ipi_index).is_some() {
-                                    // Modify our index since it exists (this compensates for scale/sample changes)
-                                    self.sample_buffer.update_sample(5, ipi_index, visual_aux_sample_5);
-                                }
-
-                                // Increment our in_place_index now that we have substituted
-                                self.in_place_index.fetch_add(1, Ordering::SeqCst);
-                            }
-                            // Beat sync is off: allow "scroll"
-                            else {
-                                if channel == 0 {
-                                    if self.add_beat_line.load(Ordering::SeqCst) {
-                                        if self.stereo_view.load(Ordering::SeqCst) {
-                                            self.sample_buffer.push_sample(6, 2.1);
-                                            self.sample_buffer.push_sample(6, -2.1);
-                                        } else {
-                                            self.sample_buffer.push_sample(6, 1.0);
-                                            self.sample_buffer.push_sample(6, -1.0);
-                                        }
-                                        
-                                        self.add_beat_line.store(false, Ordering::SeqCst);
-                                    } else {
-                                        self.sample_buffer.push_sample(6, 0.0);
-                                    }
-                                }
-
-                                self.sample_buffer.push_sample(0, visual_main_sample);
-                                self.sample_buffer.push_sample(1, visual_aux_sample_1);
-                                self.sample_buffer.push_sample(2, visual_aux_sample_2);
-                                self.sample_buffer.push_sample(3, visual_aux_sample_3);
-                                self.sample_buffer.push_sample(4, visual_aux_sample_4);
-                                self.sample_buffer.push_sample(5, visual_aux_sample_5);
-                            }
-                            // ms = samples/samplerate so ms*samplerate = samples
-                            // Limit the size of the vecdeques to X elements
-                            //let scroll: usize = (sample_rate as usize / 1000_usize)
-                            //    * self.params.scrollspeed.value() as usize;
-                        }
-                        
-                        //if channel == 0 {
-                            self.skip_counter.fetch_add(1, Ordering::SeqCst);
-                        //}
-                    }
-                }
-            } else {
-                for (b0, ax0, ax1, ax2, ax3, ax4) in
-                    izip!(raw_buffer, aux_0, aux_1, aux_2, aux_3, aux_4)
-                {
-                    if self.skip_counter.load(Ordering::SeqCst) % self.params.h_scale.value() == 0 {
-                        for (
-                            sample,
-                            aux_sample_1,
-                            aux_sample_2,
-                            aux_sample_3,
-                            aux_sample_4,
-                            aux_sample_5,
-                        ) in izip!(
-                            b0.iter(),
-                            ax0.iter(),
-                            ax1.iter(),
-                            ax2.iter(),
-                            ax3.iter(),
-                            ax4.iter()
-                        ) {
-                            let current_gain = self.params.free_gain.smoothed.next();
-                            // Apply gain to main signal
-                            let visual_main_sample: f32 = *sample * current_gain;
-                            // Apply gain to sidechains if it isn't doubled up/cloned (FL Studio does this)
-                            let visual_aux_sample_1 = if *aux_sample_1 != *sample {
-                                *aux_sample_1 * current_gain
-                            } else {
-                                0.0
-                            };
-                            let visual_aux_sample_2 = if *aux_sample_2 != *sample {
-                                *aux_sample_2 * current_gain
-                            } else {
-                                0.0
-                            };
-                            let visual_aux_sample_3 = if *aux_sample_3 != *sample {
-                                *aux_sample_3 * current_gain
-                            } else {
-                                0.0
-                            };
-                            let visual_aux_sample_4 = if *aux_sample_4 != *sample {
-                                *aux_sample_4 * current_gain
-                            } else {
-                                0.0
-                            };
-                            let visual_aux_sample_5 = if *aux_sample_5 != *sample {
-                                *aux_sample_5 * current_gain
-                            } else {
-                                0.0
-                            };
-
-                            // Update all the samples
-                            self.sample_buffer.push_sample(0, visual_main_sample);
-                            self.sample_buffer.push_sample(1, visual_aux_sample_1);
-                            self.sample_buffer.push_sample(2, visual_aux_sample_2);
-                            self.sample_buffer.push_sample(3, visual_aux_sample_3);
-                            self.sample_buffer.push_sample(4, visual_aux_sample_4);
-                            self.sample_buffer.push_sample(5, visual_aux_sample_5);
-
-                            //let scroll: usize = (sample_rate as usize / 1000.0 as usize)
-                            //        * self.params.scrollspeed.value() as usize;
-                        }
-                    }
-                    self.skip_counter.fetch_add(1, Ordering::SeqCst);
-                }
-            }
+        if !self.params.editor_state.is_open() {
+            return ProcessStatus::Normal;
         }
+
+        // Update cached parameters to reduce atomic loads inside the loop
+        let current_gain = self.params.free_gain.smoothed.next();
+        self.gain_cache.store(current_gain, Ordering::Relaxed);
+        
+        let h_scale = self.params.h_scale.value();
+        self.h_scale_cache.store(h_scale, Ordering::Relaxed);
+        
+        // Update sample rate if it changed
+        let sample_rate = context.transport().sample_rate;
+        if sample_rate != self.sample_rate.load(Ordering::Relaxed) {
+            self.sample_rate.store(sample_rate, Ordering::Release);
+            
+            // Recalculate buffer size based on new sample rate
+            let buffer_size = calculate_buffer_size(sample_rate, self.params.scrollspeed.value());
+            self.sample_buffer.update_internal_length(buffer_size);
+            self.sample_buffer_2.update_internal_length(buffer_size);
+        }
+        
+        // Reset skip counter before processing
+        let mut local_skip_counter = 0;
+        self.skip_counter.store(0, Ordering::Relaxed);
+
+        // Determine whether to process in analyzer mode or oscilloscope mode
+        if !self.show_analyzer.load(Ordering::Relaxed) {
+            // Process in oscilloscope mode
+            self.process_oscilloscope(buffer, aux, context, &mut local_skip_counter);
+        } else {
+            // Process in analyzer mode
+            self.process_analyzer(buffer, aux, &mut local_skip_counter);
+        }
+        
+        // Update the skip counter
+        self.skip_counter.store(local_skip_counter, Ordering::Relaxed);
+        
         ProcessStatus::Normal
     }
     
     const MIDI_INPUT: MidiConfig = MidiConfig::None;
-    
     const MIDI_OUTPUT: MidiConfig = MidiConfig::None;
-    
     const HARD_REALTIME_ONLY: bool = false;
     
     fn task_executor(&mut self) -> TaskExecutor<Self> {
-        // In the default implementation we can simply ignore the value
         Box::new(|_| ())
     }
     
     fn filter_state(_state: &mut PluginState) {}
-    
     fn reset(&mut self) {}
-    
     fn deactivate(&mut self) {}
+}
+
+// Separate processing implementations to reduce complexity
+impl Scrollscope {
+    fn process_oscilloscope(
+        &self,
+        buffer: &mut nih_plug::prelude::Buffer<'_>,
+        aux: &mut nih_plug::prelude::AuxiliaryBuffers<'_>,
+        context: &mut impl ProcessContext<Self>,
+        skip_counter: &mut i32,
+    ) {
+        // Get buffer slices for efficient processing
+        let raw_buffer = buffer.as_slice_immutable();
+        let aux_0 = aux.inputs[0].as_slice_immutable();
+        let aux_1 = aux.inputs[1].as_slice_immutable();
+        let aux_2 = aux.inputs[2].as_slice_immutable();
+        let aux_3 = aux.inputs[3].as_slice_immutable();
+        let aux_4 = aux.inputs[4].as_slice_immutable();
+        
+        // Cache parameters to avoid atomic loads in the loop
+        let h_scale = self.h_scale_cache.load(Ordering::Relaxed) as i32;
+        let current_gain = self.gain_cache.load(Ordering::Relaxed);
+        let sync_active = self.sync_var.load(Ordering::Relaxed);
+        let alt_sync_active = self.alt_sync.load(Ordering::Relaxed);
+        let stereo_mode = self.stereo_view.load(Ordering::Relaxed);
+        
+        // Process beat detection once per buffer instead of per sample
+        let (is_on_beat, is_on_bar) = self.detect_beat(context);
+        let mut add_beat_line = false;
+        
+        // Update in-place index if needed
+        let mut in_place_idx = self.in_place_index.load(Ordering::Relaxed);
+        if sync_active {
+            if alt_sync_active {
+                if context.transport().playing {
+                    match self.params.sync_timing.value() {
+                        BeatSync::Bar => {
+                            if is_on_bar && self.beat_threshold.load(Ordering::Relaxed) == 0 {
+                                in_place_idx = 0;
+                                self.beat_threshold.fetch_add(1, Ordering::Relaxed);
+                            } else if !is_on_bar && self.beat_threshold.load(Ordering::Relaxed) > 0 {
+                                self.beat_threshold.store(0, Ordering::Relaxed);
+                            }
+                        },
+                        BeatSync::Beat => {
+                            if is_on_beat && self.beat_threshold.load(Ordering::Relaxed) == 0 {
+                                in_place_idx = 0;
+                                self.beat_threshold.fetch_add(1, Ordering::Relaxed);
+                            } else if !is_on_beat && self.beat_threshold.load(Ordering::Relaxed) > 0 {
+                                self.beat_threshold.store(0, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                } else {
+                    in_place_idx = 0;
+                }
+            } else {
+                // Normal sync mode
+                let current_beat = context.transport().pos_beats().unwrap();
+                let temp_current_beat = (current_beat * 1000.0).round() / 1000.0;
+                
+                const EPSILON: f64 = 0.0001;
+                match self.params.sync_timing.value() {
+                    BeatSync::Bar => {
+                        if (temp_current_beat % 4.0) < EPSILON {
+                            in_place_idx = 0;
+                            *skip_counter = 0;
+                        }
+                    }
+                    BeatSync::Beat => {
+                        if (temp_current_beat % 1.0) < EPSILON {
+                            in_place_idx = 0;
+                            *skip_counter = 0;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Check if we need to add beat lines
+        if context.transport().playing {
+            if alt_sync_active {
+                add_beat_line = is_on_beat;
+            } else if context.transport().pos_beats().unwrap() % 1.0 == 0.0 {
+                add_beat_line = true;
+            }
+        }
+        
+        // Process all channels in stereo mode
+        let channels = [0, 1];
+        for (b0, ax0, ax1, ax2, ax3, ax4, channel) in 
+            izip!(raw_buffer, aux_0, aux_1, aux_2, aux_3, aux_4, channels) {
+            
+            // Setup batch processing
+            let mut batch = Vec::with_capacity(100); // Pre-allocate to avoid reallocations
+            
+            // Process all samples in this channel
+            for (sample, aux_sample_1, aux_sample_2, aux_sample_3, aux_sample_4, aux_sample_5) in 
+                izip!(b0.iter(), ax0.iter(), ax1.iter(), ax2.iter(), ax3.iter(), ax4.iter()) {
+                
+                // Only process samples according to h_scale parameter
+                if *skip_counter % h_scale == 0 {
+                    // Apply gain to samples
+                    let visual_main_sample = sample * current_gain;
+                    
+                    // Only apply aux processing if the aux isn't the same as the main signal
+                    let visual_aux_sample_1 = if *aux_sample_1 != *sample { *aux_sample_1 * current_gain } else { 0.0 };
+                    let visual_aux_sample_2 = if *aux_sample_2 != *sample { *aux_sample_2 * current_gain } else { 0.0 };
+                    let visual_aux_sample_3 = if *aux_sample_3 != *sample { *aux_sample_3 * current_gain } else { 0.0 };
+                    let visual_aux_sample_4 = if *aux_sample_4 != *sample { *aux_sample_4 * current_gain } else { 0.0 };
+                    let visual_aux_sample_5 = if *aux_sample_5 != *sample { *aux_sample_5 * current_gain } else { 0.0 };
+
+                    let mut sum_sample = 0.0;
+                    if self.channel_enabled[6].load(Ordering::Relaxed) {
+                        if self.channel_enabled[0].load(Ordering::Relaxed) {
+                            sum_sample += visual_main_sample;
+                        }
+                        if self.channel_enabled[1].load(Ordering::Relaxed) {
+                            sum_sample += visual_aux_sample_1;
+                        }
+                        if self.channel_enabled[2].load(Ordering::Relaxed) {
+                            sum_sample += visual_aux_sample_2;
+                        }
+                        if self.channel_enabled[3].load(Ordering::Relaxed) {
+                            sum_sample += visual_aux_sample_3;
+                        }
+                        if self.channel_enabled[4].load(Ordering::Relaxed) {
+                            sum_sample += visual_aux_sample_4;
+                        }
+                        if self.channel_enabled[5].load(Ordering::Relaxed) {
+                            sum_sample += visual_aux_sample_5;
+                        }
+                    }
+                    // Add to batch
+                    batch.push((7, sum_sample));
+                    
+                    // Check for clipping
+                    if visual_main_sample.abs() > 1.0 || 
+                       visual_aux_sample_1.abs() > 1.0 || 
+                       visual_aux_sample_2.abs() > 1.0 || 
+                       visual_aux_sample_3.abs() > 1.0 || 
+                       visual_aux_sample_4.abs() > 1.0 || 
+                       visual_aux_sample_5.abs() > 1.0 {
+                        self.is_clipping.store(120.0, Ordering::Relaxed);
+                    }
+                    
+                    // Add beat line if needed (only on first channel)
+                    if channel == 0 && add_beat_line {
+                        if stereo_mode {
+                            batch.push((6, 2.1));
+                            batch.push((6, -2.1));
+                        } else {
+                            batch.push((6, 1.0));
+                            batch.push((6, -1.0));
+                        }
+                        add_beat_line = false; // Reset flag after adding
+                        self.add_beat_line.store(false, Ordering::Relaxed);
+                    } else if channel == 0 {
+                        batch.push((6, 0.0)); // Normal point for beat channel
+                    }
+                    
+                    // Process based on sync mode
+                    if sync_active {
+                        // In-place update mode
+                        let ipi_index = in_place_idx as usize;
+                        
+                        if self.sample_buffer.get_sample(0, ipi_index).is_some() {
+                            self.sample_buffer.update_sample(0, ipi_index, visual_main_sample);
+                            self.sample_buffer.update_sample(1, ipi_index, visual_aux_sample_1);
+                            self.sample_buffer.update_sample(2, ipi_index, visual_aux_sample_2);
+                            self.sample_buffer.update_sample(3, ipi_index, visual_aux_sample_3);
+                            self.sample_buffer.update_sample(4, ipi_index, visual_aux_sample_4);
+                            self.sample_buffer.update_sample(5, ipi_index, visual_aux_sample_5);
+                        }
+                        
+                        // Increment in-place index
+                        in_place_idx += 1;
+                    } else {
+                        // Normal scrolling mode - add samples to batch
+                        batch.push((0, visual_main_sample));
+                        batch.push((1, visual_aux_sample_1));
+                        batch.push((2, visual_aux_sample_2));
+                        batch.push((3, visual_aux_sample_3));
+                        batch.push((4, visual_aux_sample_4));
+                        batch.push((5, visual_aux_sample_5));
+                    }
+                    
+                    // Process batch if it's getting large
+                    if batch.len() >= 50 {
+                        if channel == 0 {
+                            self.sample_buffer.push_samples(&batch);
+                        } else {
+                            self.sample_buffer_2.push_samples(&batch);
+                        }
+                        batch.clear();
+                    }
+                }
+                
+                // Increment skip counter
+                *skip_counter += 1;
+            }
+            
+            // Process any remaining samples in batch
+            if !batch.is_empty() {
+                if channel == 0 {
+                    self.sample_buffer.push_samples(&batch);
+                } else {
+                    self.sample_buffer_2.push_samples(&batch);
+                }
+            }
+        }
+        
+        // Store updated in-place index
+        self.in_place_index.store(in_place_idx, Ordering::Relaxed);
+    }
+    
+    fn process_analyzer(
+        &self,
+        buffer: &mut nih_plug::prelude::Buffer<'_>,
+        aux: &mut nih_plug::prelude::AuxiliaryBuffers<'_>,
+        skip_counter: &mut i32,
+    ) {
+        // Get buffer slices for efficient processing
+        let raw_buffer = buffer.as_slice_immutable();
+        let aux_0 = aux.inputs[0].as_slice_immutable();
+        let aux_1 = aux.inputs[1].as_slice_immutable();
+        let aux_2 = aux.inputs[2].as_slice_immutable();
+        let aux_3 = aux.inputs[3].as_slice_immutable();
+        let aux_4 = aux.inputs[4].as_slice_immutable();
+        
+        // Cache parameters to avoid atomic loads in the loop
+        let h_scale = self.h_scale_cache.load(Ordering::Relaxed) as i32;
+        let current_gain = self.gain_cache.load(Ordering::Relaxed);
+        
+        // Process all channels
+        let channels = [0, 1];
+        for (b0, ax0, ax1, ax2, ax3, ax4, channel) in 
+            izip!(raw_buffer, aux_0, aux_1, aux_2, aux_3, aux_4, channels) {
+            
+            // Setup batch processing
+            let mut batch = Vec::with_capacity(100); // Pre-allocate to avoid reallocations
+            
+            // Process all samples in this channel
+            for (sample, aux_sample_1, aux_sample_2, aux_sample_3, aux_sample_4, aux_sample_5) in 
+                izip!(b0.iter(), ax0.iter(), ax1.iter(), ax2.iter(), ax3.iter(), ax4.iter()) {
+                
+                // Only process samples according to h_scale parameter
+                if *skip_counter % h_scale == 0 {
+                    // Apply gain to samples
+                    let visual_main_sample = sample * current_gain;
+                    
+                    // Only apply aux processing if the aux isn't the same as the main signal
+                    let visual_aux_sample_1 = if *aux_sample_1 != *sample { *aux_sample_1 * current_gain } else { 0.0 };
+                    let visual_aux_sample_2 = if *aux_sample_2 != *sample { *aux_sample_2 * current_gain } else { 0.0 };
+                    let visual_aux_sample_3 = if *aux_sample_3 != *sample { *aux_sample_3 * current_gain } else { 0.0 };
+                    let visual_aux_sample_4 = if *aux_sample_4 != *sample { *aux_sample_4 * current_gain } else { 0.0 };
+                    let visual_aux_sample_5 = if *aux_sample_5 != *sample { *aux_sample_5 * current_gain } else { 0.0 };
+                    
+                    // Check for clipping
+                    if visual_main_sample.abs() > 1.0 || 
+                       visual_aux_sample_1.abs() > 1.0 || 
+                       visual_aux_sample_2.abs() > 1.0 || 
+                       visual_aux_sample_3.abs() > 1.0 || 
+                       visual_aux_sample_4.abs() > 1.0 || 
+                       visual_aux_sample_5.abs() > 1.0 {
+                        self.is_clipping.store(120.0, Ordering::Relaxed);
+                    }
+                    
+                    // Add samples to batch
+                    batch.push((0, visual_main_sample));
+                    batch.push((1, visual_aux_sample_1));
+                    batch.push((2, visual_aux_sample_2));
+                    batch.push((3, visual_aux_sample_3));
+                    batch.push((4, visual_aux_sample_4));
+                    batch.push((5, visual_aux_sample_5));
+                    
+                    // Process batch if it's getting large
+                    if batch.len() >= 50 {
+                        if channel == 0 {
+                            self.sample_buffer.push_samples(&batch);
+                        } else {
+                            self.sample_buffer_2.push_samples(&batch);
+                        }
+                        batch.clear();
+                    }
+                }
+                
+                if channel == 0 {
+                    // Increment skip counter
+                    *skip_counter += 1;
+                }
+            }
+            
+            // Process any remaining samples in batch
+            if !batch.is_empty() {
+                if channel == 0 {
+                    self.sample_buffer.push_samples(&batch);
+                } else {
+                    self.sample_buffer_2.push_samples(&batch);
+                }
+            }
+        }
+    }
+    
+    // Helper method to detect beats from transport
+    fn detect_beat(&self, context: &mut impl ProcessContext<Self>) -> (bool, bool) {
+        let mut is_on_beat = false;
+        let mut is_on_bar = false;
+        
+        if context.transport().playing {
+            if let Some(beats) = context.transport().pos_beats() {
+                // Check if we're on a beat (integer value)
+                let beat_fractional = beats.fract();
+                // Use epsilon comparison for floating point
+                if beat_fractional < 0.01 || beat_fractional > 0.99 {
+                    is_on_beat = true;
+                    
+                    // Check if we're on a bar (every 4 beats typically)
+                    let beat_in_bar = beats % 4.0;
+                    if beat_in_bar < 0.01 || beat_in_bar > 3.99 {
+                        is_on_bar = true;
+                    }
+                }
+            }
+        }
+        
+        (is_on_beat, is_on_bar)
+    }
+}
+
+// Helper function to eliminate denormals for better performance
+#[inline]
+fn flush_denormal_bits(value: f32) -> f32 {
+    if value.abs() < 1.0e-20 {
+        0.0
+    } else {
+        value
+    }
 }
 
 impl ClapPlugin for Scrollscope {
     const CLAP_ID: &'static str = "com.ardura.scrollscope";
-    const CLAP_DESCRIPTION: Option<&'static str> = Some("A simple scrolling oscilloscope");
+    const CLAP_DESCRIPTION: Option<&'static str> = Some("A scrolling oscilloscope");
     const CLAP_MANUAL_URL: Option<&'static str> = Some(Self::URL);
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[
         ClapFeature::AudioEffect,
-        ClapFeature::Stereo,
-        ClapFeature::Mono,
         ClapFeature::Utility,
+        ClapFeature::Analyzer,
     ];
 }
 
 impl Vst3Plugin for Scrollscope {
     const VST3_CLASS_ID: [u8; 16] = *b"ScrollscopeAAAAA";
-    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
-        &[Vst3SubCategory::Fx, Vst3SubCategory::Analyzer];
+    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[
+        Vst3SubCategory::Analyzer,
+        Vst3SubCategory::Tools,
+    ];
 }
 
 nih_export_clap!(Scrollscope);
 nih_export_vst3!(Scrollscope);
-
 
 fn pivot_frequency_slope(freq: f32, magnitude: f32, f0: f32, slope: f32) -> f32{
     if freq < f0 {
         magnitude * (freq / f0).powf(slope / 20.0)
     } else {
         magnitude * (f0 / freq).powf(slope / 20.0)
-    }
-}
-
-fn flush_denormal_bits(val: f32) -> f32 {
-    let bits = val.to_bits();
-    let abs_bits = bits & 0x7fffffff; // Clear sign bit
-    if abs_bits < 0x00800000 { // Check if denormal (exponent bits are all 0)
-        0.0
-    } else {
-        val
     }
 }

@@ -1,6 +1,6 @@
 use configparser::ini::Ini;
 use egui_plot::{HLine, Line, Plot, PlotPoints};
-use nih_plug::{prelude::*};
+use nih_plug::prelude::*;
 use nih_plug_egui::{
     create_egui_editor,
     egui::{
@@ -22,12 +22,12 @@ pub(crate) fn make_gui(instance: &mut Scrollscope, _async_executor: AsyncExecuto
     let sync_var = instance.sync_var.clone();
     let alt_sync = instance.alt_sync.clone();
     let dir_var = instance.direction.clone();
-    let en_main = instance.enable_main.clone();
-    let en_aux1 = instance.enable_aux_1.clone();
-    let en_aux2 = instance.enable_aux_2.clone();
-    let en_aux3 = instance.enable_aux_3.clone();
-    let en_aux4 = instance.enable_aux_4.clone();
-    let en_aux5 = instance.enable_aux_5.clone();
+    let en_main = instance.channel_enabled[0].clone();
+    let en_aux1 = instance.channel_enabled[1].clone();
+    let en_aux2 = instance.channel_enabled[2].clone();
+    let en_aux3 = instance.channel_enabled[3].clone();
+    let en_aux4 = instance.channel_enabled[4].clone();
+    let en_aux5 = instance.channel_enabled[5].clone();
     let en_sum = instance.enable_sum.clone();
     let en_guidelines = instance.enable_guidelines.clone();
     let en_bar_mode = instance.enable_bar_mode.clone();
@@ -225,24 +225,6 @@ inactive_bg = 60,60,60");
                 let mut scrolling_beat_line: Line = Line::new(PlotPoints::default());
                 let mut line: Line = Line::new(PlotPoints::default());
                 let mut line_2: Line = Line::new(PlotPoints::default());
-                /*
-                // Channel 1
-                let mut samples = samples.lock().unwrap();
-                let mut aux_samples_1 = aux_samples_1.lock().unwrap();
-                let mut aux_samples_2 = aux_samples_2.lock().unwrap();
-                let mut aux_samples_3 = aux_samples_3.lock().unwrap();
-                let mut aux_samples_4 = aux_samples_4.lock().unwrap();
-                let mut aux_samples_5 = aux_samples_5.lock().unwrap();
-                // Channel 2
-                let mut samples_2 = samples_2.lock().unwrap();
-                let mut aux_samples_1_2 = aux_samples_1_2.lock().unwrap();
-                let mut aux_samples_2_2 = aux_samples_2_2.lock().unwrap();
-                let mut aux_samples_3_2 = aux_samples_3_2.lock().unwrap();
-                let mut aux_samples_4_2 = aux_samples_4_2.lock().unwrap();
-                let mut aux_samples_5_2 = aux_samples_5_2.lock().unwrap();
-                // Lines
-                let mut scrolling_beat_lines = scrolling_beat_lines.lock().unwrap();
-                */
                 let sr = sample_rate.clone();
                 // The entire "window" container
                 ui.vertical(|ui| {
@@ -328,7 +310,6 @@ Version 1.4.1");
                                 aux_line_3_2 = Line::new(PlotPoints::default());
                                 aux_line_4_2 = Line::new(PlotPoints::default());
                                 aux_line_5_2 = Line::new(PlotPoints::default());
-                                //scrolling_beat_line = Line::new(PlotPoints::default());
                                 line_2 = Line::new(PlotPoints::default());
                             }
                         }
@@ -485,27 +466,7 @@ Version 1.4.1");
                         }         
                     });
                 });
-                // Reverse our order for drawing if desired (I know this is "slow")
-                /*
-                if dir_var.load(Ordering::SeqCst) {
-                    // Channel 1
-                    samples.make_contiguous().reverse();
-                    aux_samples_1.make_contiguous().reverse();
-                    aux_samples_2.make_contiguous().reverse();
-                    aux_samples_3.make_contiguous().reverse();
-                    aux_samples_4.make_contiguous().reverse();
-                    aux_samples_5.make_contiguous().reverse();
-                    // Channel 2
-                    samples_2.make_contiguous().reverse();
-                    aux_samples_1_2.make_contiguous().reverse();
-                    aux_samples_2_2.make_contiguous().reverse();
-                    aux_samples_3_2.make_contiguous().reverse();
-                    aux_samples_4_2.make_contiguous().reverse();
-                    aux_samples_5_2.make_contiguous().reverse();
-                    // Lines
-                    scrolling_beat_lines.make_contiguous().reverse();
-                }
-                */
+
                 let mut final_primary_color: Color32 = Default::default();
                 let mut final_aux_line_color: Color32 = Default::default();
                 let mut final_aux_line_color_2: Color32 = Default::default();
@@ -576,7 +537,8 @@ Version 1.4.1");
                     // Show the frequency analyzer
                     if show_analyzer.load(Ordering::SeqCst) {
                         let mut shapes: Vec<egui::Shape> = vec![];
-                        let scroll: usize = (sample_rate.load(Ordering::Relaxed) as usize / 1000.0 as usize) * params.scrollspeed.value() as usize;
+                        let t_sr = sr.load(Ordering::Relaxed);
+                        let scroll: usize = (t_sr as usize / 1000.0 as usize) * params.scrollspeed.value() as usize;
                         // Sample Buffer ONE calculations
                         // Compute our fast fourier transforms
                         let mut buffer: Vec<Complex<f32>> = samples.get_complex_samples_with_length(0, scroll);
@@ -606,27 +568,27 @@ Version 1.4.1");
                         // Compute
                         let magnitudes: Vec<f32> = buffer.iter().map(|c| c.norm() as f32).collect();
                         let frequencies: Vec<f32> = (0..buffer_len / 2)
-                            .map(|i| i as f32 * sr.load(Ordering::Relaxed) / buffer_len as f32)
+                            .map(|i| i as f32 * t_sr / buffer_len as f32)
                             .collect();
                         let magnitudes_ax1: Vec<f32> = ax1.iter().map(|c| c.norm() as f32).collect();
                         let frequencies_ax1: Vec<f32> = (0..ax1_len / 2)
-                            .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax1_len as f32)
+                            .map(|i| i as f32 * t_sr / ax1_len as f32)
                             .collect();
                         let magnitudes_ax2: Vec<f32> = ax2.iter().map(|c| c.norm() as f32).collect();
                         let frequencies_ax2: Vec<f32> = (0..ax2_len / 2)
-                            .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax2_len as f32)
+                            .map(|i| i as f32 * t_sr / ax2_len as f32)
                             .collect();
                         let magnitudes_ax3: Vec<f32> = ax3.iter().map(|c| c.norm() as f32).collect();
                         let frequencies_ax3: Vec<f32> = (0..ax3_len / 2)
-                            .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax3_len as f32)
+                            .map(|i| i as f32 * t_sr / ax3_len as f32)
                             .collect();
                         let magnitudes_ax4: Vec<f32> = ax4.iter().map(|c| c.norm() as f32).collect();
                         let frequencies_ax4: Vec<f32> = (0..ax4_len / 2)
-                            .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax4_len as f32)
+                            .map(|i| i as f32 * t_sr / ax4_len as f32)
                             .collect();
                         let magnitudes_ax5: Vec<f32> = ax5.iter().map(|c| c.norm() as f32).collect();
                         let frequencies_ax5: Vec<f32> = (0..ax5_len / 2)
-                            .map(|i| i as f32 * sr.load(Ordering::Relaxed) / ax5_len as f32)
+                            .map(|i| i as f32 * t_sr / ax5_len as f32)
                             .collect();
                         // Scale for visibility
                         let db_scaler: f32 = 2.75;
@@ -707,7 +669,6 @@ Version 1.4.1");
                                 .map(|((i, freq), magnitude)| {
                                     let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                     pos2(
-                                        //freq.log10() * bar_scaler + x_shift,
                                         i as f32 * 10.0 * bar_scaler + 230.0,
                                         (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                     )
@@ -721,7 +682,6 @@ Version 1.4.1");
                                 .map(|((i, freq), magnitude)| {
                                     let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                     pos2(
-                                        //freq.log10() * bar_scaler + x_shift,
                                         i as f32 * 10.0 * bar_scaler + 230.0,
                                         (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                     )
@@ -734,7 +694,6 @@ Version 1.4.1");
                                 .map(|((i, freq), magnitude)| {
                                     let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                     pos2(
-                                        //freq.log10() * bar_scaler + x_shift,
                                         i as f32 * 10.0 * bar_scaler + 230.0,
                                         (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                     )
@@ -747,7 +706,6 @@ Version 1.4.1");
                                 .map(|((i, freq), magnitude)| {
                                     let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                     pos2(
-                                        //freq.log10() * bar_scaler + x_shift,
                                         i as f32 * 10.0 * bar_scaler + 230.0,
                                         (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                     )
@@ -760,7 +718,6 @@ Version 1.4.1");
                                 .map(|((i, freq), magnitude)| {
                                     let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                     pos2(
-                                        //freq.log10() * bar_scaler + x_shift,
                                         i as f32 * 10.0 * bar_scaler + 230.0,
                                         (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                     )
@@ -773,7 +730,6 @@ Version 1.4.1");
                                 .map(|((i, freq), magnitude)| {
                                     let y = pivot_frequency_slope(*freq, *magnitude, pivot, slope);
                                     pos2(
-                                        //freq.log10() * bar_scaler + x_shift,
                                         i as f32 * 10.0 * bar_scaler + 230.0,
                                         (util::gain_to_db(y) * -1.0) * db_scaler + y_shift
                                     )
@@ -1987,20 +1943,27 @@ Version 1.4.1");
                             ui.painter().extend(shapes);
                         }
                     } else {
-                        let mut sum_data = samples.get_samples(0);
-                        let mut sum_data_2 = samples_2.get_samples(0);
-                        let sbl: PlotPoints = samples.get_samples(6)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, sample)| {
-                                [i as f64, *sample as f64]
-                            })
-                            .collect();
+                        //let internal_length = samples.internal_length.load(Ordering::SeqCst);
+                        //let internal_length_2 = samples_2.internal_length.load(Ordering::SeqCst);
+                        //let write_indices = samples.write_indices[0].load(Ordering::SeqCst);
+                        let sbl: PlotPoints = {
+                            // Get a read lock on the buffer
+                            let buffer_len = samples.internal_length.load(Ordering::Acquire);
+                            let main_samples = samples.get_samples(6); // Now returns Vec<f32> directly
+
+                            (0..buffer_len)
+                                .map(|i| {
+                                    let x = i as f64; // Linear index
+                                    let y = main_samples[i] as f64;
+                                    [x, y]
+                                })
+                                .collect()
+                        };
                         let sbl_line = Line::new(sbl)
                             .color(guidelines)
                             .stroke(Stroke::new(0.25, guidelines.linear_multiply(0.5)));
                         let offset_osc_view;
-                        if stereo_view.load(Ordering::SeqCst) {
+                        if stereo_view.load(Ordering::Relaxed) {
                             offset_osc_view = 1.0;
                         } else {
                             offset_osc_view = 0.0;
@@ -2008,290 +1971,282 @@ Version 1.4.1");
                         // CHANNEL 0
                         /////////////////////////////////////////////////////////////////////////////////////////
                         // Primary Input
-                        let data: PlotPoints = samples.get_samples(0)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, sample)| {
-                                let x: f64;
-                                let y: f64;
-                                if en_main.load(Ordering::SeqCst) {
-                                    x = i as f64;
-                                    y = *sample as f64 + offset_osc_view;
-                                } else {
-                                    x = i as f64;
-                                    y = 0.0;
-                                }
-                                [x, y]
-                            })
-                            .collect();
+                        // Primary Input
+                        let data: PlotPoints = {
+                            // Get a read lock on the buffer
+                            let buffer_len = samples.internal_length.load(Ordering::Acquire);
+                            let main_samples = samples.get_samples(0); // Now returns Vec<f32> directly
+
+                            (0..buffer_len)
+                                .map(|i| {
+                                    let x = i as f64; // Linear index
+                                    let y = if en_main.load(Ordering::Relaxed) {
+                                        main_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
+                                    [x, y]
+                                })
+                                .collect()
+                        };
                         line = Line::new(data)
                             .color(primary_line_color)
                             .stroke(Stroke::new(1.1, primary_line_color));
                         // Aux inputs
-                        let aux_data: PlotPoints = samples.get_samples(1)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, sample)| {
-                                let x: f64;
-                                let y: f64;
-                                if en_aux1.load(Ordering::SeqCst) {
-                                    x = i as f64;
-                                    y = *sample as f64 + offset_osc_view;
-                                    let sum_temp = sum_data.get_mut(i).unwrap();
-                                    *sum_temp += *sample;
-                                } else {
-                                    x = i as f64;
-                                    y = 0.0;
-                                }
-                                [x, y]
-                            })
-                            .collect();
+                        let aux_data: PlotPoints = {
+                            let buffer_len = samples.internal_length.load(Ordering::Acquire);
+                            let aux1_samples = samples.get_samples(1); // Channel 1 for Aux1
+
+                            (0..buffer_len)
+                                .map(|i| {
+                                    let x = i as f64;
+                                    let y = if en_aux1.load(Ordering::Relaxed) {
+                                        aux1_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
+                                    [x, y]
+                                })
+                                .collect()
+                        };
                         aux_line = Line::new(aux_data)
                             .color(user_aux_1)
                             .stroke(Stroke::new(1.0, user_aux_1));
-                        let aux_data_2: PlotPoints = samples.get_samples(2)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, sample)| {
-                                let x: f64;
-                                let y: f64;
-                                if en_aux2.load(Ordering::SeqCst) {
-                                    x = i as f64;
-                                    y = *sample as f64 + offset_osc_view;
-                                    let sum_temp = sum_data.get_mut(i).unwrap();
-                                    *sum_temp += *sample;
-                                } else {
-                                    x = i as f64;
-                                    y = 0.0;
-                                }
-                                [x, y]
-                            })
-                            .collect();
+                        let aux_data_2: PlotPoints = {
+                            let buffer_len = samples.internal_length.load(Ordering::Acquire);
+                            let aux2_samples = samples.get_samples(2); // Channel 2 for Aux2
+                                                
+                            (0..buffer_len)
+                                .map(|i| {
+                                    let x = i as f64;
+                                    let y = if en_aux2.load(Ordering::Relaxed) {
+                                        aux2_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
+                                    [x, y]
+                                })
+                                .collect()
+                        };
                         aux_line_2 = Line::new(aux_data_2)
                             .color(user_aux_2)
                             .stroke(Stroke::new(1.0, user_aux_2));
-                        let aux_data_3: PlotPoints = samples.get_samples(3)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, sample)| {
-                                let x: f64;
-                                let y: f64;
-                                if en_aux3.load(Ordering::SeqCst) {
-                                    x = i as f64;
-                                    y = *sample as f64 + offset_osc_view;
-                                    let sum_temp = sum_data.get_mut(i).unwrap();
-                                    *sum_temp += *sample;
-                                } else {
-                                    x = i as f64;
-                                    y = 0.0;
-                                }
-                                [x, y]
-                            })
-                            .collect();
+                        let aux_data_3: PlotPoints = {
+                            let buffer_len = samples.internal_length.load(Ordering::Acquire);
+                            let aux3_samples = samples.get_samples(3); // Channel 3 for Aux3
+                                                
+                            (0..buffer_len)
+                                .map(|i| {
+                                    let x = i as f64;
+                                    let y = if en_aux3.load(Ordering::Relaxed) {
+                                        aux3_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
+                                    [x, y]
+                                })
+                                .collect()
+                        };
                         aux_line_3 = Line::new(aux_data_3)
                             .color(user_aux_3)
                             .stroke(Stroke::new(1.0, user_aux_3));
-                        let aux_data_4: PlotPoints = samples.get_samples(4)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, sample)| {
-                                let x: f64;
-                                let y: f64;
-                                if en_aux4.load(Ordering::SeqCst) {
-                                    x = i as f64;
-                                    y = *sample as f64 + offset_osc_view;
-                                    let sum_temp = sum_data.get_mut(i).unwrap();
-                                    *sum_temp += *sample;
-                                } else {
-                                    x = i as f64;
-                                    y = 0.0;
-                                }
-                                [x, y]
-                            })
-                            .collect();
+                        let aux_data_4: PlotPoints = {
+                            let buffer_len = samples.internal_length.load(Ordering::Acquire);
+                            let aux4_samples = samples.get_samples(4); // Channel 4 for Aux4
+                                                
+                            (0..buffer_len)
+                                .map(|i| {
+                                    let x = i as f64;
+                                    let y = if en_aux4.load(Ordering::Relaxed) {
+                                        aux4_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
+                                    [x, y]
+                                })
+                                .collect()
+                        };
                         aux_line_4 = Line::new(aux_data_4)
                             .color(user_aux_4)
                             .stroke(Stroke::new(1.0, user_aux_4));
-                        let aux_data_5: PlotPoints = samples.get_samples(5)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, sample)| {
-                                let x: f64;
-                                let y: f64;
-                                if en_aux5.load(Ordering::SeqCst) {
-                                    x = i as f64;
-                                    y = *sample as f64 + offset_osc_view;
-                                    let sum_temp = sum_data.get_mut(i).unwrap();
-                                    *sum_temp += *sample;
-                                } else {
-                                    x = i as f64;
-                                    y = 0.0;
-                                }
-                                [x, y]
-                            })
-                            .collect();
+                        let aux_data_5: PlotPoints = {
+                            let buffer_len = samples.internal_length.load(Ordering::Acquire);
+                            let aux5_samples = samples.get_samples(5); // Channel 5 for Aux5
+                                                
+                            (0..buffer_len)
+                                .map(|i| {
+                                    let x = i as f64;
+                                    let y = if en_aux5.load(Ordering::Relaxed) {
+                                        aux5_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
+                                    [x, y]
+                                })
+                                .collect()
+                        };
                         aux_line_5 = Line::new(aux_data_5)
                             .color(user_aux_5)
                             .stroke(Stroke::new(1.0, user_aux_5));
-                        if en_sum.load(Ordering::SeqCst) {
-                            // Summed audio line
-                            let sum_plotpoints: PlotPoints = sum_data
-                                .iter()
-                                .enumerate()
-                                .map(|(i, sample)| {
+                        let sum_plotpoints: PlotPoints = {
+                            let buffer_len = samples.internal_length.load(Ordering::Acquire);
+                            let sum_samples = samples.get_samples(7); // Channel 7 for sum
+                                                
+                            (0..buffer_len)
+                                .map(|i| {
                                     let x = i as f64;
-                                    let y = *sample as f64 + offset_osc_view;
+                                    let y = if en_sum.load(Ordering::Relaxed) {
+                                        sum_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
                                     [x, y]
                                 })
-                                .collect();
-                            sum_line = Line::new(sum_plotpoints)
+                                .collect()
+                        };
+                        sum_line = Line::new(sum_plotpoints)
                                 .color(user_sum_line.linear_multiply(0.25))
                                 .stroke(Stroke::new(0.9, user_sum_line));
-                        }
+
                         // CHANNEL 1
                         /////////////////////////////////////////////////////////////////////////////////////////
                         // Primary Input
-                        let data_2: PlotPoints = samples_2.get_samples(0)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, sample)| {
-                                let x: f64;
-                                let y: f64;
-                                if en_main.load(Ordering::SeqCst) {
-                                    x = i as f64;
-                                    y = *sample as f64 - offset_osc_view;
-                                } else {
-                                    x = i as f64;
-                                    y = 0.0;
-                                }
-                                [x, y]
-                            })
-                            .collect();
+                        let data_2: PlotPoints = {
+                            // Get a read lock on the buffer
+                            let buffer_len = samples_2.internal_length.load(Ordering::Acquire);
+                            let main_samples = samples_2.get_samples(0); // Now returns Vec<f32> directly
+
+                            (0..buffer_len)
+                                .map(|i| {
+                                    let x = i as f64; // Linear index
+                                    let y = if en_main.load(Ordering::Relaxed) {
+                                        main_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
+                                    [x, y]
+                                })
+                                .collect()
+                        };
                         line_2 = Line::new(data_2)
                             .color(primary_line_color)
                             .stroke(Stroke::new(1.1, primary_line_color));
                         // Aux inputs
                         #[allow(non_snake_case)]
-                        let aux_data__2: PlotPoints = samples_2.get_samples(1)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, sample)| {
-                                let x: f64;
-                                let y: f64;
-                                if en_aux1.load(Ordering::SeqCst) {
-                                    x = i as f64;
-                                    y = *sample as f64 - offset_osc_view;
-                                    let sum_temp = sum_data_2.get_mut(i).unwrap();
-                                    *sum_temp += *sample;
-                                } else {
-                                    x = i as f64;
-                                    y = 0.0;
-                                }
-                                [x, y]
-                            })
-                            .collect();
+                        let aux_data__2: PlotPoints = {
+                            let buffer_len = samples_2.internal_length.load(Ordering::Acquire);
+                            let aux1_samples = samples_2.get_samples(1); // Channel 1 for Aux1
+
+                            (0..buffer_len)
+                                .map(|i| {
+                                    let x = i as f64;
+                                    let y = if en_aux1.load(Ordering::Relaxed) {
+                                        aux1_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
+                                    [x, y]
+                                })
+                                .collect()
+                        };
                         aux_line__2 = Line::new(aux_data__2)
                             .color(user_aux_1)
                             .stroke(Stroke::new(1.0, user_aux_1));
-                        let aux_data_2_2: PlotPoints = samples_2.get_samples(2)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, sample)| {
-                                let x: f64;
-                                let y: f64;
-                                if en_aux2.load(Ordering::SeqCst) {
-                                    x = i as f64;
-                                    y = *sample as f64 - offset_osc_view;
-                                    let sum_temp = sum_data_2.get_mut(i).unwrap();
-                                    *sum_temp += *sample;
-                                } else {
-                                    x = i as f64;
-                                    y = 0.0;
-                                }
-                                [x, y]
-                            })
-                            .collect();
+                        let aux_data_2_2: PlotPoints = {
+                            let buffer_len = samples_2.internal_length.load(Ordering::Acquire);
+                            let aux2_samples = samples_2.get_samples(2); // Channel 2 for Aux2
+                                                
+                            (0..buffer_len)
+                                .map(|i| {
+                                    let x = i as f64;
+                                    let y = if en_aux2.load(Ordering::Relaxed) {
+                                        aux2_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
+                                    [x, y]
+                                })
+                                .collect()
+                        };
                         aux_line_2_2 = Line::new(aux_data_2_2)
                             .color(user_aux_2)
                             .stroke(Stroke::new(1.0, user_aux_2));
-                        let aux_data_3_2: PlotPoints = samples_2.get_samples(3)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, sample)| {
-                                let x: f64;
-                                let y: f64;
-                                if en_aux3.load(Ordering::SeqCst) {
-                                    x = i as f64;
-                                    y = *sample as f64 - offset_osc_view;
-                                    let sum_temp = sum_data_2.get_mut(i).unwrap();
-                                    *sum_temp += *sample;
-                                } else {
-                                    x = i as f64;
-                                    y = 0.0;
-                                }
-                                [x, y]
-                            })
-                            .collect();
+                        let aux_data_3_2: PlotPoints = {
+                            let buffer_len = samples_2.internal_length.load(Ordering::Acquire);
+                            let aux3_samples = samples_2.get_samples(3); // Channel 3 for Aux3
+                                                
+                            (0..buffer_len)
+                                .map(|i| {
+                                    let x = i as f64;
+                                    let y = if en_aux3.load(Ordering::Relaxed) {
+                                        aux3_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
+                                    [x, y]
+                                })
+                                .collect()
+                        };
                         aux_line_3_2 = Line::new(aux_data_3_2)
                             .color(user_aux_3)
                             .stroke(Stroke::new(1.0, user_aux_3));
-                        let aux_data_4_2: PlotPoints = samples_2.get_samples(4)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, sample)| {
-                                let x: f64;
-                                let y: f64;
-                                if en_aux4.load(Ordering::SeqCst) {
-                                    x = i as f64;
-                                    y = *sample as f64 - offset_osc_view;
-                                    let sum_temp = sum_data_2.get_mut(i).unwrap();
-                                    *sum_temp += *sample;
-                                } else {
-                                    x = i as f64;
-                                    y = 0.0;
-                                }
-                                [x, y]
-                            })
-                            .collect();
+                        let aux_data_4_2: PlotPoints = {
+                            let buffer_len = samples_2.internal_length.load(Ordering::Acquire);
+                            let aux4_samples = samples_2.get_samples(4); // Channel 4 for Aux4
+                                                
+                            (0..buffer_len)
+                                .map(|i| {
+                                    let x = i as f64;
+                                    let y = if en_aux4.load(Ordering::Relaxed) {
+                                        aux4_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
+                                    [x, y]
+                                })
+                                .collect()
+                        };
                         aux_line_4_2 = Line::new(aux_data_4_2)
                             .color(user_aux_4)
                             .stroke(Stroke::new(1.0, user_aux_4));
-                        let aux_data_5_2: PlotPoints = samples_2.get_samples(5)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, sample)| {
-                                let x: f64;
-                                let y: f64;
-                                if en_aux5.load(Ordering::SeqCst) {
-                                    x = i as f64;
-                                    y = *sample as f64 - offset_osc_view;
-                                    let sum_temp = sum_data_2.get_mut(i).unwrap();
-                                    *sum_temp += *sample;
-                                } else {
-                                    x = i as f64;
-                                    y = 0.0;
-                                }
-                                [x, y]
-                            })
-                            .collect();
+                        let aux_data_5_2: PlotPoints = {
+                            let buffer_len = samples_2.internal_length.load(Ordering::Acquire);
+                            let aux5_samples = samples_2.get_samples(5); // Channel 5 for Aux5
+                                                
+                            (0..buffer_len)
+                                .map(|i| {
+                                    let x = i as f64;
+                                    let y = if en_aux5.load(Ordering::Relaxed) {
+                                        aux5_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
+                                    [x, y]
+                                })
+                                .collect()
+                        };
                         aux_line_5_2 = Line::new(aux_data_5_2)
                             .color(user_aux_5)
                             .stroke(Stroke::new(1.0, user_aux_5));
-                        if en_sum.load(Ordering::SeqCst) {
-                            // Summed audio line
-                            let sum_plotpoints: PlotPoints = sum_data_2
-                                .iter()
-                                .enumerate()
-                                .map(|(i, sample)| {
+                        let sum_plotpoints_2: PlotPoints = {
+                            let buffer_len = samples_2.internal_length.load(Ordering::Acquire);
+                            let sum_samples = samples_2.get_samples(7); // Channel 7 for sum
+                                                
+                            (0..buffer_len)
+                                .map(|i| {
                                     let x = i as f64;
-                                    let y = *sample as f64 - offset_osc_view;
+                                    let y = if en_sum.load(Ordering::Relaxed) {
+                                        sum_samples[i] as f64 + offset_osc_view
+                                    } else {
+                                        0.0
+                                    };
                                     [x, y]
                                 })
-                                .collect();
-                            sum_line_2 = Line::new(sum_plotpoints)
+                                .collect()
+                        };
+                        let sum_line_2 = Line::new(sum_plotpoints_2)
                                 .color(user_sum_line.linear_multiply(0.25))
                                 .stroke(Stroke::new(0.9, user_sum_line));
-                        }
                         // Show the Oscilloscope
                         Plot::new("Oscilloscope")
                             .show_background(false)
@@ -2710,34 +2665,19 @@ Version 1.4.1");
                 });
                 // Floating buttons
                 if !show_analyzer.load(Ordering::Relaxed) {
-                    let mut stereo_switch_ui = ui.new_child(UiBuilder::new().max_rect(Rect { min: Pos2 { x: 930.0, y: 30.0 }, max: Pos2 { x: 1040.0, y: 40.0 } }));
-                    //    Rect { min: Pos2 { x: 930.0, y: 30.0 }, max: Pos2 { x: 1040.0, y: 40.0 } },
-                    //    Layout::centered_and_justified(egui::Direction::LeftToRight)
-                    //);
+                    let mut stereo_switch_ui = ui.new_child(UiBuilder::new().max_rect(Rect { min: Pos2 { x: 740.0, y: 30.0 }, max: Pos2 { x: 1040.0, y: 40.0 } }));
                     stereo_switch_ui
                         .scope(|ui| {
-                            let checkstereo = slim_checkbox::AtomicSlimCheckbox::new(&stereo_view, "Stereo View");
-                            ui.add(checkstereo)
+                            ui.horizontal(|ui|{
+                                let checkstereo = slim_checkbox::AtomicSlimCheckbox::new(&stereo_view, "Stereo View");
+                                ui.add(checkstereo);
+                                let leftchannel = slim_checkbox::AtomicSlimCheckbox::new(&stereo_view, "Left Channel");
+                                ui.add(leftchannel);
+                                let rightchanel = slim_checkbox::AtomicSlimCheckbox::new(&stereo_view, "Right Channel");
+                                ui.add(rightchanel);
+                            });
                         }).inner;
                 }
-                // Put things back after drawing so process() isn't broken
-                /*
-                if dir_var.load(Ordering::SeqCst) {
-                    samples.make_contiguous().reverse();
-                    aux_samples_1.make_contiguous().reverse();
-                    aux_samples_2.make_contiguous().reverse();
-                    aux_samples_3.make_contiguous().reverse();
-                    aux_samples_4.make_contiguous().reverse();
-                    aux_samples_5.make_contiguous().reverse();
-                    samples_2.make_contiguous().reverse();
-                    aux_samples_1_2.make_contiguous().reverse();
-                    aux_samples_2_2.make_contiguous().reverse();
-                    aux_samples_3_2.make_contiguous().reverse();
-                    aux_samples_4_2.make_contiguous().reverse();
-                    aux_samples_5_2.make_contiguous().reverse();
-                    scrolling_beat_lines.make_contiguous().reverse();
-                }
-                */
             });
         },
     )

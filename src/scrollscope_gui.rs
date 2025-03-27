@@ -1,10 +1,11 @@
 use configparser::ini::Ini;
-use egui_plot::{HLine, Line, Plot, PlotPoints};
+// Not until new version of egui - gated by nih-plug update
+//use egui_plot::{HLine, Line, Plot, PlotPoints};
 use nih_plug::prelude::*;
 use nih_plug_egui::{
     create_egui_editor,
-    egui::{
-        self, epaint::{self}, pos2, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Stroke, UiBuilder
+    egui::{                                                                           //Not until new version of egui - gated by nih-plug update
+        self, epaint::{self}, plot::{HLine, Line, Plot, PlotPoints}, pos2, Align2, Color32, FontId, Layout, Pos2, Rect, Response, Rounding, Stroke
     },
     widgets,
 };
@@ -13,7 +14,7 @@ use std::{fs::File, io::Write, path::MAIN_SEPARATOR_STR, str::FromStr, sync::{at
 use std::ops::RangeInclusive;
 use crate::{pivot_frequency_slope, slim_checkbox, Scrollscope};
 
-pub(crate) fn make_gui(instance: &mut Scrollscope, _async_executor: AsyncExecutor<Scrollscope>) -> Option<Box<dyn Editor>> {
+pub(crate) fn make_gui(instance: &Scrollscope, _async_executor: AsyncExecutor<Scrollscope>) -> Option<Box<dyn Editor>> {
     let params = instance.params.clone();
     let samples = instance.sample_buffer.clone();
     let samples_2 = instance.sample_buffer_2.clone();
@@ -36,6 +37,8 @@ pub(crate) fn make_gui(instance: &mut Scrollscope, _async_executor: AsyncExecuto
     let en_filled_lines = instance.en_filled_lines.clone();
     let en_filled_osc = instance.en_filled_osc.clone();
     let stereo_view = instance.stereo_view.clone();
+    let en_left_channel = instance.en_left_channel.clone();
+    let en_right_channel = instance.en_right_channel.clone();
     let sample_rate = instance.sample_rate.clone();
     let prev_skip = instance.prev_skip.clone();
     let mut config = Ini::new();
@@ -206,7 +209,7 @@ inactive_bg = 60,60,60");
                 style_var.visuals.widgets.noninteractive.bg_fill = background_color;
                 // Trying to draw background as rect
                 ui.painter()
-                    .rect_filled(Rect::EVERYTHING, CornerRadius::ZERO, background_color);
+                    .rect_filled(Rect::EVERYTHING, Rounding::none(), background_color);
                 //ui.set_style(style_var);
                 // Reset these to be assigned/reassigned when params change
                 let mut sum_line: Line = Line::new(PlotPoints::default());
@@ -232,14 +235,14 @@ inactive_bg = 60,60,60");
                     ui.horizontal(|ui| {
                         ui.label("Scrollscope")
                             .on_hover_text("by Ardura with nih-plug and egui
-Version 1.4.1");
+Version 1.4.2");
                         ui.add(
                             widgets::ParamSlider::for_param(&params.free_gain, setter)
                                 .with_width(30.0),
                         ).on_hover_text("Visual gain adjustment (no output change)");
                         ui.add_space(4.0);
                         let swap_response: Response;
-                        if show_analyzer.load(Ordering::SeqCst) {
+                        if show_analyzer.load(Ordering::Relaxed) {
                             let _scroll_handle = ui.add(
                                 widgets::ParamSlider::for_param(&params.scrollspeed, setter)
                                     .with_width(120.0),
@@ -285,17 +288,6 @@ Version 1.4.1");
                             || alt_sync_response.clicked()
                             || timing_response.changed()
                             {
-                                // Keep same direction when syncing (Issue #12)
-                                if sync_response.clicked() {
-                                    // If flip selected already, it should be deselected on this click
-                                    if dir_var.load(Ordering::SeqCst) {
-                                        dir_var.store(false, Ordering::SeqCst);
-                                    }
-                                    // If flip not selected, it should now be selected
-                                    else {
-                                        dir_var.store(true, Ordering::SeqCst);
-                                    }
-                                }
                                 sum_line = Line::new(PlotPoints::default());
                                 aux_line = Line::new(PlotPoints::default());
                                 aux_line_2 = Line::new(PlotPoints::default());
@@ -319,85 +311,85 @@ Version 1.4.1");
                         samples_2.update_internal_length(scroll);
 
                         if swap_response.clicked() {
-                            let num = ontop.load(Ordering::SeqCst);
+                            let num = ontop.load(Ordering::Relaxed);
                             // This skips possible "OFF" lines when toggling
                             match num {
                                 0 => {
-                                    if en_aux1.load(Ordering::SeqCst) {
-                                        ontop.store(1, Ordering::SeqCst);
-                                    } else if en_aux2.load(Ordering::SeqCst) {
-                                        ontop.store(2, Ordering::SeqCst);
-                                    } else if en_aux3.load(Ordering::SeqCst) {
-                                        ontop.store(3, Ordering::SeqCst);
-                                    } else if en_aux4.load(Ordering::SeqCst) {
-                                        ontop.store(4, Ordering::SeqCst);
-                                    } else if en_aux5.load(Ordering::SeqCst) {
-                                        ontop.store(5, Ordering::SeqCst);
+                                    if en_aux1.load(Ordering::Relaxed) {
+                                        ontop.store(1, Ordering::Relaxed);
+                                    } else if en_aux2.load(Ordering::Relaxed) {
+                                        ontop.store(2, Ordering::Relaxed);
+                                    } else if en_aux3.load(Ordering::Relaxed) {
+                                        ontop.store(3, Ordering::Relaxed);
+                                    } else if en_aux4.load(Ordering::Relaxed) {
+                                        ontop.store(4, Ordering::Relaxed);
+                                    } else if en_aux5.load(Ordering::Relaxed) {
+                                        ontop.store(5, Ordering::Relaxed);
                                     }
                                 }
                                 1 => {
-                                    if en_aux2.load(Ordering::SeqCst) {
-                                        ontop.store(2, Ordering::SeqCst);
-                                    } else if en_aux3.load(Ordering::SeqCst) {
-                                        ontop.store(3, Ordering::SeqCst);
-                                    } else if en_aux4.load(Ordering::SeqCst) {
-                                        ontop.store(4, Ordering::SeqCst);
-                                    } else if en_aux5.load(Ordering::SeqCst) {
-                                        ontop.store(5, Ordering::SeqCst);
-                                    } else if en_main.load(Ordering::SeqCst) {
-                                        ontop.store(0, Ordering::SeqCst);
+                                    if en_aux2.load(Ordering::Relaxed) {
+                                        ontop.store(2, Ordering::Relaxed);
+                                    } else if en_aux3.load(Ordering::Relaxed) {
+                                        ontop.store(3, Ordering::Relaxed);
+                                    } else if en_aux4.load(Ordering::Relaxed) {
+                                        ontop.store(4, Ordering::Relaxed);
+                                    } else if en_aux5.load(Ordering::Relaxed) {
+                                        ontop.store(5, Ordering::Relaxed);
+                                    } else if en_main.load(Ordering::Relaxed) {
+                                        ontop.store(0, Ordering::Relaxed);
                                     }
                                 }
                                 2 => {
-                                    if en_aux3.load(Ordering::SeqCst) {
-                                        ontop.store(3, Ordering::SeqCst);
-                                    } else if en_aux4.load(Ordering::SeqCst) {
-                                        ontop.store(4, Ordering::SeqCst);
-                                    } else if en_aux5.load(Ordering::SeqCst) {
-                                        ontop.store(5, Ordering::SeqCst);
-                                    } else if en_main.load(Ordering::SeqCst) {
-                                        ontop.store(0, Ordering::SeqCst);
-                                    } else if en_aux1.load(Ordering::SeqCst) {
-                                        ontop.store(1, Ordering::SeqCst);
+                                    if en_aux3.load(Ordering::Relaxed) {
+                                        ontop.store(3, Ordering::Relaxed);
+                                    } else if en_aux4.load(Ordering::Relaxed) {
+                                        ontop.store(4, Ordering::Relaxed);
+                                    } else if en_aux5.load(Ordering::Relaxed) {
+                                        ontop.store(5, Ordering::Relaxed);
+                                    } else if en_main.load(Ordering::Relaxed) {
+                                        ontop.store(0, Ordering::Relaxed);
+                                    } else if en_aux1.load(Ordering::Relaxed) {
+                                        ontop.store(1, Ordering::Relaxed);
                                     }
                                 }
                                 3 => {
-                                    if en_aux4.load(Ordering::SeqCst) {
-                                        ontop.store(4, Ordering::SeqCst);
-                                    } else if en_aux5.load(Ordering::SeqCst) {
-                                        ontop.store(5, Ordering::SeqCst);
-                                    } else if en_main.load(Ordering::SeqCst) {
-                                        ontop.store(0, Ordering::SeqCst);
-                                    } else if en_aux1.load(Ordering::SeqCst) {
-                                        ontop.store(1, Ordering::SeqCst);
-                                    } else if en_aux2.load(Ordering::SeqCst) {
-                                        ontop.store(2, Ordering::SeqCst);
+                                    if en_aux4.load(Ordering::Relaxed) {
+                                        ontop.store(4, Ordering::Relaxed);
+                                    } else if en_aux5.load(Ordering::Relaxed) {
+                                        ontop.store(5, Ordering::Relaxed);
+                                    } else if en_main.load(Ordering::Relaxed) {
+                                        ontop.store(0, Ordering::Relaxed);
+                                    } else if en_aux1.load(Ordering::Relaxed) {
+                                        ontop.store(1, Ordering::Relaxed);
+                                    } else if en_aux2.load(Ordering::Relaxed) {
+                                        ontop.store(2, Ordering::Relaxed);
                                     }
                                 }
                                 4 => {
-                                    if en_aux5.load(Ordering::SeqCst) {
-                                        ontop.store(5, Ordering::SeqCst);
-                                    } else if en_main.load(Ordering::SeqCst) {
-                                        ontop.store(0, Ordering::SeqCst);
-                                    } else if en_aux1.load(Ordering::SeqCst) {
-                                        ontop.store(1, Ordering::SeqCst);
-                                    } else if en_aux2.load(Ordering::SeqCst) {
-                                        ontop.store(2, Ordering::SeqCst);
-                                    } else if en_aux3.load(Ordering::SeqCst) {
-                                        ontop.store(3, Ordering::SeqCst);
+                                    if en_aux5.load(Ordering::Relaxed) {
+                                        ontop.store(5, Ordering::Relaxed);
+                                    } else if en_main.load(Ordering::Relaxed) {
+                                        ontop.store(0, Ordering::Relaxed);
+                                    } else if en_aux1.load(Ordering::Relaxed) {
+                                        ontop.store(1, Ordering::Relaxed);
+                                    } else if en_aux2.load(Ordering::Relaxed) {
+                                        ontop.store(2, Ordering::Relaxed);
+                                    } else if en_aux3.load(Ordering::Relaxed) {
+                                        ontop.store(3, Ordering::Relaxed);
                                     }
                                 }
                                 5 => {
-                                    if en_main.load(Ordering::SeqCst) {
-                                        ontop.store(0, Ordering::SeqCst);
-                                    } else if en_aux1.load(Ordering::SeqCst) {
-                                        ontop.store(1, Ordering::SeqCst);
-                                    } else if en_aux2.load(Ordering::SeqCst) {
-                                        ontop.store(2, Ordering::SeqCst);
-                                    } else if en_aux3.load(Ordering::SeqCst) {
-                                        ontop.store(3, Ordering::SeqCst);
-                                    } else if en_aux4.load(Ordering::SeqCst) {
-                                        ontop.store(4, Ordering::SeqCst);
+                                    if en_main.load(Ordering::Relaxed) {
+                                        ontop.store(0, Ordering::Relaxed);
+                                    } else if en_aux1.load(Ordering::Relaxed) {
+                                        ontop.store(1, Ordering::Relaxed);
+                                    } else if en_aux2.load(Ordering::Relaxed) {
+                                        ontop.store(2, Ordering::Relaxed);
+                                    } else if en_aux3.load(Ordering::Relaxed) {
+                                        ontop.store(3, Ordering::Relaxed);
+                                    } else if en_aux4.load(Ordering::Relaxed) {
+                                        ontop.store(4, Ordering::Relaxed);
                                     }
                                 }
                                 _ => {
@@ -429,7 +421,7 @@ Version 1.4.1");
                             &en_aux5,
                             "6",
                         ));
-                        if !show_analyzer.load(Ordering::SeqCst) {
+                        if !show_analyzer.load(Ordering::Relaxed) {
                             ui.add(slim_checkbox::AtomicSlimCheckbox::new(
                                 &en_sum,
                                 "Sum",
@@ -439,7 +431,7 @@ Version 1.4.1");
                             &show_analyzer,
                             "Analyze",
                         ));
-                        if show_analyzer.load(Ordering::SeqCst) {
+                        if show_analyzer.load(Ordering::Relaxed) {
                             ui.add(slim_checkbox::AtomicSlimCheckbox::new(
                                 &en_filled_lines,
                                 "Filled Lines",
@@ -455,7 +447,7 @@ Version 1.4.1");
                         }
                         if analyzer_toggle.clicked() {
                             // This is a ! because we'll always be behind the param toggle in time
-                            if !show_analyzer.load(Ordering::SeqCst) {
+                            if !show_analyzer.load(Ordering::Relaxed) {
                                 setter.set_parameter(&params.h_scale, prev_skip.load(Ordering::Relaxed));
                             } else {
                                 prev_skip.store(params.h_scale.value(), Ordering::Relaxed);
@@ -475,7 +467,7 @@ Version 1.4.1");
                 let mut final_aux_line_color_5: Color32 = Default::default();
                 ui.allocate_ui(egui::Vec2::new(900.0, 380.0), |ui| {
                     // Fix our colors to focus on our line
-                    match ontop.load(Ordering::SeqCst) {
+                    match ontop.load(Ordering::Relaxed) {
                         0 => {
                             // Main unaffected
                             final_primary_color = primary_line_color;
@@ -535,7 +527,7 @@ Version 1.4.1");
                         }
                     }
                     // Show the frequency analyzer
-                    if show_analyzer.load(Ordering::SeqCst) {
+                    if show_analyzer.load(Ordering::Relaxed) {
                         let mut shapes: Vec<egui::Shape> = vec![];
                         let t_sr = sr.load(Ordering::Relaxed);
                         let scroll: usize = (t_sr as usize / 1000.0 as usize) * params.scrollspeed.value() as usize;
@@ -599,7 +591,7 @@ Version 1.4.1");
                         // For some reason 12 lines up the same here...
                         let pivot: f32 = 1000.0;
                         let slope: f32 = 12.0;
-                        if en_bar_mode.load(Ordering::SeqCst) {
+                        if en_bar_mode.load(Ordering::Relaxed) {
                             let length = frequencies.len();
                             //let bar_scaler = 300.0;
                             let bar_scaler: f32 = 1.6;
@@ -736,9 +728,9 @@ Version 1.4.1");
                                 })
                                 .collect();
                                 // Draw whichever order next
-                                match ontop.load(Ordering::SeqCst) {
+                                match ontop.load(Ordering::Relaxed) {
                                     0 => {
-                                        if en_aux5.load(Ordering::SeqCst) { 
+                                        if en_aux5.load(Ordering::Relaxed) { 
                                             for elem in data_ax5.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -746,13 +738,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_5
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) { 
+                                        if en_aux4.load(Ordering::Relaxed) { 
                                             for elem in data_ax4.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -760,13 +752,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_4
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) { 
+                                        if en_aux3.load(Ordering::Relaxed) { 
                                             for elem in data_ax3.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -774,13 +766,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_3
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) { 
+                                        if en_aux2.load(Ordering::Relaxed) { 
                                             for elem in data_ax2.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -788,13 +780,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_2
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) { 
+                                        if en_aux1.load(Ordering::Relaxed) { 
                                             for elem in data_ax1.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -802,13 +794,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_1
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_main.load(Ordering::SeqCst) { 
+                                        if en_main.load(Ordering::Relaxed) { 
                                             for elem in data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -816,7 +808,7 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_primary_color
                                                     )
                                                 );
@@ -824,7 +816,7 @@ Version 1.4.1");
                                         }
                                     }
                                     1 => {
-                                        if en_main.load(Ordering::SeqCst) { 
+                                        if en_main.load(Ordering::Relaxed) { 
                                             for elem in data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -832,13 +824,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_primary_color
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) { 
+                                        if en_aux5.load(Ordering::Relaxed) { 
                                             for elem in data_ax5.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -846,13 +838,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_5
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) { 
+                                        if en_aux4.load(Ordering::Relaxed) { 
                                             for elem in data_ax4.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -860,13 +852,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_4
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) { 
+                                        if en_aux3.load(Ordering::Relaxed) { 
                                             for elem in data_ax3.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -874,13 +866,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_3
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) { 
+                                        if en_aux2.load(Ordering::Relaxed) { 
                                             for elem in data_ax2.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -888,13 +880,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_2
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) { 
+                                        if en_aux1.load(Ordering::Relaxed) { 
                                             for elem in data_ax1.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -902,7 +894,7 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_1
                                                     )
                                                 );
@@ -910,7 +902,7 @@ Version 1.4.1");
                                         }
                                     }
                                     2 => {
-                                        if en_aux1.load(Ordering::SeqCst) { 
+                                        if en_aux1.load(Ordering::Relaxed) { 
                                             for elem in data_ax1.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -918,13 +910,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_1
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_main.load(Ordering::SeqCst) { 
+                                        if en_main.load(Ordering::Relaxed) { 
                                             for elem in data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -932,13 +924,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_primary_color
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) { 
+                                        if en_aux5.load(Ordering::Relaxed) { 
                                             for elem in data_ax5.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -946,13 +938,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_5
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) { 
+                                        if en_aux4.load(Ordering::Relaxed) { 
                                             for elem in data_ax4.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -960,13 +952,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_4
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) { 
+                                        if en_aux3.load(Ordering::Relaxed) { 
                                             for elem in data_ax3.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -974,13 +966,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_3
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) { 
+                                        if en_aux2.load(Ordering::Relaxed) { 
                                             for elem in data_ax2.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -988,7 +980,7 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_2
                                                     )
                                                 );
@@ -996,7 +988,7 @@ Version 1.4.1");
                                         }
                                     }
                                     3 => {
-                                        if en_aux2.load(Ordering::SeqCst) { 
+                                        if en_aux2.load(Ordering::Relaxed) { 
                                             for elem in data_ax2.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1004,13 +996,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_2
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) { 
+                                        if en_aux1.load(Ordering::Relaxed) { 
                                             for elem in data_ax1.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1018,13 +1010,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_1
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_main.load(Ordering::SeqCst) { 
+                                        if en_main.load(Ordering::Relaxed) { 
                                             for elem in data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1032,13 +1024,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_primary_color
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) { 
+                                        if en_aux5.load(Ordering::Relaxed) { 
                                             for elem in data_ax5.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1046,13 +1038,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_5
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) { 
+                                        if en_aux4.load(Ordering::Relaxed) { 
                                             for elem in data_ax4.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1060,13 +1052,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_4
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) { 
+                                        if en_aux3.load(Ordering::Relaxed) { 
                                             for elem in data_ax3.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1074,7 +1066,7 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_3
                                                     )
                                                 );
@@ -1082,7 +1074,7 @@ Version 1.4.1");
                                         }
                                     }
                                     4 => {
-                                        if en_aux3.load(Ordering::SeqCst) { 
+                                        if en_aux3.load(Ordering::Relaxed) { 
                                             for elem in data_ax3.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1090,13 +1082,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_3
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) { 
+                                        if en_aux2.load(Ordering::Relaxed) { 
                                             for elem in data_ax2.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1104,13 +1096,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_2
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) { 
+                                        if en_aux1.load(Ordering::Relaxed) { 
                                             for elem in data_ax1.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1118,13 +1110,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_1
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_main.load(Ordering::SeqCst) { 
+                                        if en_main.load(Ordering::Relaxed) { 
                                             for elem in data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1132,13 +1124,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_primary_color
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) { 
+                                        if en_aux5.load(Ordering::Relaxed) { 
                                             for elem in data_ax5.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1146,13 +1138,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_5
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) { 
+                                        if en_aux4.load(Ordering::Relaxed) { 
                                             for elem in data_ax4.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1160,7 +1152,7 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_4
                                                     )
                                                 );
@@ -1168,7 +1160,7 @@ Version 1.4.1");
                                         }
                                     }
                                     5 => {
-                                        if en_aux4.load(Ordering::SeqCst) { 
+                                        if en_aux4.load(Ordering::Relaxed) { 
                                             for elem in data_ax4.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1176,13 +1168,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_4
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) { 
+                                        if en_aux3.load(Ordering::Relaxed) { 
                                             for elem in data_ax3.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1190,13 +1182,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_3
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) { 
+                                        if en_aux2.load(Ordering::Relaxed) { 
                                             for elem in data_ax2.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1204,13 +1196,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_2
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) { 
+                                        if en_aux1.load(Ordering::Relaxed) { 
                                             for elem in data_ax1.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1218,13 +1210,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_1
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_main.load(Ordering::SeqCst) { 
+                                        if en_main.load(Ordering::Relaxed) { 
                                             for elem in data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1232,13 +1224,13 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_primary_color
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) { 
+                                        if en_aux5.load(Ordering::Relaxed) { 
                                             for elem in data_ax5.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1246,7 +1238,7 @@ Version 1.4.1");
                                                             min: Pos2::new(elem.x + x_shift, elem.y), 
                                                             max: Pos2::new(elem.x + 10.0 + x_shift, 515.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         user_aux_5
                                                     )
                                                 );
@@ -1327,7 +1319,7 @@ Version 1.4.1");
                                     )
                                 })
                                 .collect();
-                            if en_guidelines.load(Ordering::SeqCst) {
+                            if en_guidelines.load(Ordering::Relaxed) {
                                 let freqs: [f32; 12] = [
                                     0.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 18000.0];
                                 let scaled_ref_freqs: Vec<f32> = freqs.iter().map(|num|{num.log10() * freq_scaler}).collect();
@@ -1365,10 +1357,10 @@ Version 1.4.1");
                                 }
                             }
                             // Draw whichever order next
-                            match ontop.load(Ordering::SeqCst) {
+                            match ontop.load(Ordering::Relaxed) {
                                 0 => {
-                                    if en_filled_lines.load(Ordering::SeqCst) {
-                                        if en_aux5.load(Ordering::SeqCst) { 
+                                    if en_filled_lines.load(Ordering::Relaxed) {
+                                        if en_aux5.load(Ordering::Relaxed) { 
                                             for point in ax5_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1376,13 +1368,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_5
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) { 
+                                        if en_aux4.load(Ordering::Relaxed) { 
                                             for point in ax4_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1390,13 +1382,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_4
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) { 
+                                        if en_aux3.load(Ordering::Relaxed) { 
                                             for point in ax3_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1404,13 +1396,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_3
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) { 
+                                        if en_aux2.load(Ordering::Relaxed) { 
                                             for point in ax2_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1418,13 +1410,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_2
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) { 
+                                        if en_aux1.load(Ordering::Relaxed) { 
                                             for point in ax1_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1432,13 +1424,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color
                                                     )
                                                 );
                                             }    
                                         }
-                                        if en_main.load(Ordering::SeqCst) {
+                                        if en_main.load(Ordering::Relaxed) {
                                             for point in data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1446,24 +1438,24 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_primary_color
                                                     )
                                                 );
                                             }
                                         }
                                     } else {
-                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
-                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
-                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
-                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
-                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
-                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                        if en_aux5.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                        if en_aux4.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                        if en_aux3.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                        if en_aux2.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                        if en_aux1.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                        if en_main.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
                                     }
                                 }
                                 1 => {
-                                    if en_filled_lines.load(Ordering::SeqCst) {
-                                        if en_main.load(Ordering::SeqCst) {
+                                    if en_filled_lines.load(Ordering::Relaxed) {
+                                        if en_main.load(Ordering::Relaxed) {
                                             for point in data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1471,13 +1463,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_primary_color
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) { 
+                                        if en_aux5.load(Ordering::Relaxed) { 
                                             for point in ax5_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1485,13 +1477,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_5
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) { 
+                                        if en_aux4.load(Ordering::Relaxed) { 
                                             for point in ax4_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1499,13 +1491,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_4
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) { 
+                                        if en_aux3.load(Ordering::Relaxed) { 
                                             for point in ax3_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1513,13 +1505,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_3
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) { 
+                                        if en_aux2.load(Ordering::Relaxed) { 
                                             for point in ax2_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1527,13 +1519,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_2
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) { 
+                                        if en_aux1.load(Ordering::Relaxed) { 
                                             for point in ax1_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1541,24 +1533,24 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color
                                                     )
                                                 );
                                             }    
                                         }
                                     } else {
-                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
-                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
-                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
-                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
-                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
-                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                        if en_main.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                        if en_aux5.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                        if en_aux4.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                        if en_aux3.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                        if en_aux2.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                        if en_aux1.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
                                     }
                                 }
                                 2 => {
-                                    if en_filled_lines.load(Ordering::SeqCst) {
-                                        if en_aux1.load(Ordering::SeqCst) { 
+                                    if en_filled_lines.load(Ordering::Relaxed) {
+                                        if en_aux1.load(Ordering::Relaxed) { 
                                             for point in ax1_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1566,13 +1558,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color
                                                     )
                                                 );
                                             }    
                                         }
-                                        if en_main.load(Ordering::SeqCst) {
+                                        if en_main.load(Ordering::Relaxed) {
                                             for point in data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1580,13 +1572,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_primary_color
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) { 
+                                        if en_aux5.load(Ordering::Relaxed) { 
                                             for point in ax5_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1594,13 +1586,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_5
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) { 
+                                        if en_aux4.load(Ordering::Relaxed) { 
                                             for point in ax4_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1608,13 +1600,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_4
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) { 
+                                        if en_aux3.load(Ordering::Relaxed) { 
                                             for point in ax3_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1622,13 +1614,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_3
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) { 
+                                        if en_aux2.load(Ordering::Relaxed) { 
                                             for point in ax2_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1636,24 +1628,24 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_2
                                                     )
                                                 );
                                             }  
                                         }
                                     } else {
-                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
-                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
-                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
-                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
-                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
-                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                        if en_aux1.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                        if en_main.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                        if en_aux5.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                        if en_aux4.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                        if en_aux3.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                        if en_aux2.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
                                     }
                                 }
                                 3 => {
-                                    if en_filled_lines.load(Ordering::SeqCst) {
-                                        if en_aux2.load(Ordering::SeqCst) { 
+                                    if en_filled_lines.load(Ordering::Relaxed) {
+                                        if en_aux2.load(Ordering::Relaxed) { 
                                             for point in ax2_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1661,13 +1653,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_2
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) { 
+                                        if en_aux1.load(Ordering::Relaxed) { 
                                             for point in ax1_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1675,13 +1667,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color
                                                     )
                                                 );
                                             }    
                                         }
-                                        if en_main.load(Ordering::SeqCst) {
+                                        if en_main.load(Ordering::Relaxed) {
                                             for point in data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1689,13 +1681,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_primary_color
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) { 
+                                        if en_aux5.load(Ordering::Relaxed) { 
                                             for point in ax5_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1703,13 +1695,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_5
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) { 
+                                        if en_aux4.load(Ordering::Relaxed) { 
                                             for point in ax4_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1717,13 +1709,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_4
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) { 
+                                        if en_aux3.load(Ordering::Relaxed) { 
                                             for point in ax3_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1731,24 +1723,24 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_3
                                                     )
                                                 );
                                             }  
                                         }
                                     } else {
-                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
-                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
-                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
-                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
-                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
-                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                        if en_aux2.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                        if en_aux1.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                        if en_main.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                        if en_aux5.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                        if en_aux4.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                        if en_aux3.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
                                     }
                                 }
                                 4 => {
-                                    if en_filled_lines.load(Ordering::SeqCst) {
-                                        if en_aux3.load(Ordering::SeqCst) { 
+                                    if en_filled_lines.load(Ordering::Relaxed) {
+                                        if en_aux3.load(Ordering::Relaxed) { 
                                             for point in ax3_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1756,13 +1748,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_3
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) { 
+                                        if en_aux2.load(Ordering::Relaxed) { 
                                             for point in ax2_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1770,13 +1762,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_2
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) { 
+                                        if en_aux1.load(Ordering::Relaxed) { 
                                             for point in ax1_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1784,13 +1776,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color
                                                     )
                                                 );
                                             }    
                                         }
-                                        if en_main.load(Ordering::SeqCst) {
+                                        if en_main.load(Ordering::Relaxed) {
                                             for point in data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1798,13 +1790,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_primary_color
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) { 
+                                        if en_aux5.load(Ordering::Relaxed) { 
                                             for point in ax5_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1812,13 +1804,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_5
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) { 
+                                        if en_aux4.load(Ordering::Relaxed) { 
                                             for point in ax4_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1826,24 +1818,24 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_4
                                                     )
                                                 );
                                             }  
                                         }
                                     } else {
-                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
-                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
-                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
-                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
-                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
-                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                        if en_aux3.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                        if en_aux2.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                        if en_aux1.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                        if en_main.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                        if en_aux5.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                        if en_aux4.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
                                     }
                                 }
                                 5 => {
-                                    if en_filled_lines.load(Ordering::SeqCst) {
-                                        if en_aux4.load(Ordering::SeqCst) { 
+                                    if en_filled_lines.load(Ordering::Relaxed) {
+                                        if en_aux4.load(Ordering::Relaxed) { 
                                             for point in ax4_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1851,13 +1843,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_4
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) { 
+                                        if en_aux3.load(Ordering::Relaxed) { 
                                             for point in ax3_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1865,13 +1857,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_3
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) { 
+                                        if en_aux2.load(Ordering::Relaxed) { 
                                             for point in ax2_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1879,13 +1871,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_2
                                                     )
                                                 );
                                             }  
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) { 
+                                        if en_aux1.load(Ordering::Relaxed) { 
                                             for point in ax1_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1893,13 +1885,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color
                                                     )
                                                 );
                                             }    
                                         }
-                                        if en_main.load(Ordering::SeqCst) {
+                                        if en_main.load(Ordering::Relaxed) {
                                             for point in data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1907,13 +1899,13 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_primary_color
                                                     )
                                                 );
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) { 
+                                        if en_aux5.load(Ordering::Relaxed) { 
                                             for point in ax5_data.iter() {
                                                 shapes.push(
                                                     epaint::Shape::rect_filled(
@@ -1921,19 +1913,19 @@ Version 1.4.1");
                                                             min: Pos2::new(point.x, point.y), 
                                                             max: Pos2::new(point.x + 0.5, 500.0)
                                                         },
-                                                        CornerRadius::ZERO,
+                                                        Rounding::none(),
                                                         final_aux_line_color_5
                                                     )
                                                 );
                                             }  
                                         }
                                     } else {
-                                        if en_aux4.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
-                                        if en_aux3.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
-                                        if en_aux2.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
-                                        if en_aux1.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
-                                        if en_main.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
-                                        if en_aux5.load(Ordering::SeqCst) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
+                                        if en_aux4.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax4_data, Stroke::new(1.0, final_aux_line_color_4))); }
+                                        if en_aux3.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax3_data, Stroke::new(1.0, final_aux_line_color_3))); }
+                                        if en_aux2.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax2_data, Stroke::new(1.0, final_aux_line_color_2))); }
+                                        if en_aux1.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax1_data, Stroke::new(1.0, final_aux_line_color))); }
+                                        if en_main.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(data, Stroke::new(1.0, final_primary_color))); }
+                                        if en_aux5.load(Ordering::Relaxed) { shapes.push(epaint::Shape::line(ax5_data, Stroke::new(1.0, final_aux_line_color_5))); }
                                     }
                                 }
                                 _ => {
@@ -1953,7 +1945,7 @@ Version 1.4.1");
 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64; // Linear index
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 }; // Linear index
                                     let y = main_samples[i] as f64;
                                     [x, y]
                                 })
@@ -1979,8 +1971,8 @@ Version 1.4.1");
 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64; // Linear index
-                                    let y = if en_main.load(Ordering::Relaxed) {
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 }; // Linear index
+                                    let y = if en_main.load(Ordering::Relaxed) && en_left_channel.load(Ordering::Relaxed) {
                                         main_samples[i] as f64 + offset_osc_view
                                     } else {
                                         0.0
@@ -1990,7 +1982,7 @@ Version 1.4.1");
                                 .collect()
                         };
                         line = Line::new(data)
-                            .color(primary_line_color)
+                            //.color(primary_line_color)
                             .stroke(Stroke::new(1.1, primary_line_color));
                         // Aux inputs
                         let aux_data: PlotPoints = {
@@ -1999,8 +1991,8 @@ Version 1.4.1");
 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64;
-                                    let y = if en_aux1.load(Ordering::Relaxed) {
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 };
+                                    let y = if en_aux1.load(Ordering::Relaxed) && en_left_channel.load(Ordering::Relaxed) {
                                         aux1_samples[i] as f64 + offset_osc_view
                                     } else {
                                         0.0
@@ -2010,7 +2002,7 @@ Version 1.4.1");
                                 .collect()
                         };
                         aux_line = Line::new(aux_data)
-                            .color(user_aux_1)
+                            //.color(user_aux_1)
                             .stroke(Stroke::new(1.0, user_aux_1));
                         let aux_data_2: PlotPoints = {
                             let buffer_len = samples.internal_length.load(Ordering::Acquire);
@@ -2018,8 +2010,8 @@ Version 1.4.1");
                                                 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64;
-                                    let y = if en_aux2.load(Ordering::Relaxed) {
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 };
+                                    let y = if en_aux2.load(Ordering::Relaxed) && en_left_channel.load(Ordering::Relaxed) {
                                         aux2_samples[i] as f64 + offset_osc_view
                                     } else {
                                         0.0
@@ -2029,7 +2021,7 @@ Version 1.4.1");
                                 .collect()
                         };
                         aux_line_2 = Line::new(aux_data_2)
-                            .color(user_aux_2)
+                            //.color(user_aux_2)
                             .stroke(Stroke::new(1.0, user_aux_2));
                         let aux_data_3: PlotPoints = {
                             let buffer_len = samples.internal_length.load(Ordering::Acquire);
@@ -2037,8 +2029,8 @@ Version 1.4.1");
                                                 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64;
-                                    let y = if en_aux3.load(Ordering::Relaxed) {
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 };
+                                    let y = if en_aux3.load(Ordering::Relaxed) && en_left_channel.load(Ordering::Relaxed) {
                                         aux3_samples[i] as f64 + offset_osc_view
                                     } else {
                                         0.0
@@ -2048,7 +2040,7 @@ Version 1.4.1");
                                 .collect()
                         };
                         aux_line_3 = Line::new(aux_data_3)
-                            .color(user_aux_3)
+                            //.color(user_aux_3)
                             .stroke(Stroke::new(1.0, user_aux_3));
                         let aux_data_4: PlotPoints = {
                             let buffer_len = samples.internal_length.load(Ordering::Acquire);
@@ -2056,8 +2048,8 @@ Version 1.4.1");
                                                 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64;
-                                    let y = if en_aux4.load(Ordering::Relaxed) {
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 };
+                                    let y = if en_aux4.load(Ordering::Relaxed) && en_left_channel.load(Ordering::Relaxed) {
                                         aux4_samples[i] as f64 + offset_osc_view
                                     } else {
                                         0.0
@@ -2067,7 +2059,7 @@ Version 1.4.1");
                                 .collect()
                         };
                         aux_line_4 = Line::new(aux_data_4)
-                            .color(user_aux_4)
+                            //.color(user_aux_4)
                             .stroke(Stroke::new(1.0, user_aux_4));
                         let aux_data_5: PlotPoints = {
                             let buffer_len = samples.internal_length.load(Ordering::Acquire);
@@ -2075,8 +2067,8 @@ Version 1.4.1");
                                                 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64;
-                                    let y = if en_aux5.load(Ordering::Relaxed) {
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 };
+                                    let y = if en_aux5.load(Ordering::Relaxed) && en_left_channel.load(Ordering::Relaxed) {
                                         aux5_samples[i] as f64 + offset_osc_view
                                     } else {
                                         0.0
@@ -2086,7 +2078,7 @@ Version 1.4.1");
                                 .collect()
                         };
                         aux_line_5 = Line::new(aux_data_5)
-                            .color(user_aux_5)
+                            //.color(user_aux_5)
                             .stroke(Stroke::new(1.0, user_aux_5));
                         let sum_plotpoints: PlotPoints = {
                             let buffer_len = samples.internal_length.load(Ordering::Acquire);
@@ -2094,8 +2086,8 @@ Version 1.4.1");
                                                 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64;
-                                    let y = if en_sum.load(Ordering::Relaxed) {
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 };
+                                    let y = if en_sum.load(Ordering::Relaxed) && en_left_channel.load(Ordering::Relaxed) {
                                         sum_samples[i] as f64 + offset_osc_view
                                     } else {
                                         0.0
@@ -2105,7 +2097,7 @@ Version 1.4.1");
                                 .collect()
                         };
                         sum_line = Line::new(sum_plotpoints)
-                                .color(user_sum_line.linear_multiply(0.25))
+                                //.color(user_sum_line.linear_multiply(0.25))
                                 .stroke(Stroke::new(0.9, user_sum_line));
 
                         // CHANNEL 1
@@ -2118,9 +2110,9 @@ Version 1.4.1");
 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64; // Linear index
-                                    let y = if en_main.load(Ordering::Relaxed) {
-                                        main_samples[i] as f64 + offset_osc_view
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 }; // Linear index
+                                    let y = if en_main.load(Ordering::Relaxed) && en_right_channel.load(Ordering::Relaxed) {
+                                        main_samples[i] as f64 - offset_osc_view
                                     } else {
                                         0.0
                                     };
@@ -2129,7 +2121,7 @@ Version 1.4.1");
                                 .collect()
                         };
                         line_2 = Line::new(data_2)
-                            .color(primary_line_color)
+                            //.color(primary_line_color)
                             .stroke(Stroke::new(1.1, primary_line_color));
                         // Aux inputs
                         #[allow(non_snake_case)]
@@ -2139,9 +2131,9 @@ Version 1.4.1");
 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64;
-                                    let y = if en_aux1.load(Ordering::Relaxed) {
-                                        aux1_samples[i] as f64 + offset_osc_view
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 };
+                                    let y = if en_aux1.load(Ordering::Relaxed) && en_right_channel.load(Ordering::Relaxed) {
+                                        aux1_samples[i] as f64 - offset_osc_view
                                     } else {
                                         0.0
                                     };
@@ -2150,7 +2142,7 @@ Version 1.4.1");
                                 .collect()
                         };
                         aux_line__2 = Line::new(aux_data__2)
-                            .color(user_aux_1)
+                            //.color(user_aux_1)
                             .stroke(Stroke::new(1.0, user_aux_1));
                         let aux_data_2_2: PlotPoints = {
                             let buffer_len = samples_2.internal_length.load(Ordering::Acquire);
@@ -2158,9 +2150,9 @@ Version 1.4.1");
                                                 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64;
-                                    let y = if en_aux2.load(Ordering::Relaxed) {
-                                        aux2_samples[i] as f64 + offset_osc_view
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 };
+                                    let y = if en_aux2.load(Ordering::Relaxed) && en_right_channel.load(Ordering::Relaxed) {
+                                        aux2_samples[i] as f64 - offset_osc_view
                                     } else {
                                         0.0
                                     };
@@ -2169,7 +2161,7 @@ Version 1.4.1");
                                 .collect()
                         };
                         aux_line_2_2 = Line::new(aux_data_2_2)
-                            .color(user_aux_2)
+                            //.color(user_aux_2)
                             .stroke(Stroke::new(1.0, user_aux_2));
                         let aux_data_3_2: PlotPoints = {
                             let buffer_len = samples_2.internal_length.load(Ordering::Acquire);
@@ -2177,9 +2169,9 @@ Version 1.4.1");
                                                 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64;
-                                    let y = if en_aux3.load(Ordering::Relaxed) {
-                                        aux3_samples[i] as f64 + offset_osc_view
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 };
+                                    let y = if en_aux3.load(Ordering::Relaxed) && en_right_channel.load(Ordering::Relaxed) {
+                                        aux3_samples[i] as f64 - offset_osc_view
                                     } else {
                                         0.0
                                     };
@@ -2188,7 +2180,7 @@ Version 1.4.1");
                                 .collect()
                         };
                         aux_line_3_2 = Line::new(aux_data_3_2)
-                            .color(user_aux_3)
+                            //.color(user_aux_3)
                             .stroke(Stroke::new(1.0, user_aux_3));
                         let aux_data_4_2: PlotPoints = {
                             let buffer_len = samples_2.internal_length.load(Ordering::Acquire);
@@ -2196,9 +2188,9 @@ Version 1.4.1");
                                                 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64;
-                                    let y = if en_aux4.load(Ordering::Relaxed) {
-                                        aux4_samples[i] as f64 + offset_osc_view
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 };
+                                    let y = if en_aux4.load(Ordering::Relaxed) && en_right_channel.load(Ordering::Relaxed) {
+                                        aux4_samples[i] as f64 - offset_osc_view
                                     } else {
                                         0.0
                                     };
@@ -2207,7 +2199,7 @@ Version 1.4.1");
                                 .collect()
                         };
                         aux_line_4_2 = Line::new(aux_data_4_2)
-                            .color(user_aux_4)
+                            //.color(user_aux_4)
                             .stroke(Stroke::new(1.0, user_aux_4));
                         let aux_data_5_2: PlotPoints = {
                             let buffer_len = samples_2.internal_length.load(Ordering::Acquire);
@@ -2215,9 +2207,9 @@ Version 1.4.1");
                                                 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64;
-                                    let y = if en_aux5.load(Ordering::Relaxed) {
-                                        aux5_samples[i] as f64 + offset_osc_view
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 };
+                                    let y = if en_aux5.load(Ordering::Relaxed) && en_right_channel.load(Ordering::Relaxed) {
+                                        aux5_samples[i] as f64 - offset_osc_view
                                     } else {
                                         0.0
                                     };
@@ -2226,7 +2218,7 @@ Version 1.4.1");
                                 .collect()
                         };
                         aux_line_5_2 = Line::new(aux_data_5_2)
-                            .color(user_aux_5)
+                            //.color(user_aux_5)
                             .stroke(Stroke::new(1.0, user_aux_5));
                         let sum_plotpoints_2: PlotPoints = {
                             let buffer_len = samples_2.internal_length.load(Ordering::Acquire);
@@ -2234,9 +2226,9 @@ Version 1.4.1");
                                                 
                             (0..buffer_len)
                                 .map(|i| {
-                                    let x = i as f64;
-                                    let y = if en_sum.load(Ordering::Relaxed) {
-                                        sum_samples[i] as f64 + offset_osc_view
+                                    let x = if dir_var.load(Ordering::Relaxed) { (buffer_len - i) as f64 } else { i as f64 };
+                                    let y = if en_sum.load(Ordering::Relaxed) && en_right_channel.load(Ordering::Relaxed) {
+                                        sum_samples[i] as f64 - offset_osc_view
                                     } else {
                                         0.0
                                     };
@@ -2245,14 +2237,15 @@ Version 1.4.1");
                                 .collect()
                         };
                         let sum_line_2 = Line::new(sum_plotpoints_2)
-                                .color(user_sum_line.linear_multiply(0.25))
+                                //.color(user_sum_line.linear_multiply(0.25))
                                 .stroke(Stroke::new(0.9, user_sum_line));
+                        let y_scale = if stereo_view.load(Ordering::Relaxed) { 2.0 } else { 1.0 };
                         // Show the Oscilloscope
                         Plot::new("Oscilloscope")
                             .show_background(false)
                             .include_x(130.0)
-                            .include_y(-1.0)
-                            .include_y(1.0)
+                            .include_y(-y_scale)
+                            .include_y(y_scale)
                             .center_y_axis(true)
                             .allow_zoom(false)
                             .allow_scroll(true)
@@ -2271,9 +2264,9 @@ Version 1.4.1");
                             .label_formatter(|_, _| "".to_owned())
                             .show(ui, |plot_ui| {
                                 plot_ui.line(sbl_line);
-                                if en_sum.load(Ordering::SeqCst) {
+                                if en_sum.load(Ordering::Relaxed) {
                                     // Draw the sum line first so it's furthest behind
-                                    if en_filled_osc.load(Ordering::SeqCst) {
+                                    if en_filled_osc.load(Ordering::Relaxed) {
                                         plot_ui.line(sum_line.fill(0.0));
                                         plot_ui.line(sum_line_2.fill(0.0));
                                     } else {
@@ -2283,11 +2276,11 @@ Version 1.4.1");
                                 }
                                 // Figure out the lines to draw
                                 // Get our fill for this sequence
-                                let fill = en_filled_osc.load(Ordering::SeqCst);
+                                let fill = en_filled_osc.load(Ordering::Relaxed);
                                 // Draw whichever order next
-                                match ontop.load(Ordering::SeqCst) {
+                                match ontop.load(Ordering::Relaxed) {
                                     0 => {
-                                        if en_aux5.load(Ordering::SeqCst) {
+                                        if en_aux5.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_5.fill(0.0));
                                                 plot_ui.line(aux_line_5_2.fill(0.0));
@@ -2296,7 +2289,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_5_2);
                                             }
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) {
+                                        if en_aux4.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_4.fill(0.0));
                                                 plot_ui.line(aux_line_4_2.fill(0.0));
@@ -2305,7 +2298,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_4_2);
                                             }
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) {
+                                        if en_aux3.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_3.fill(0.0));
                                                 plot_ui.line(aux_line_3_2.fill(0.0));
@@ -2314,7 +2307,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_3_2);
                                             }
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) {
+                                        if en_aux2.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_2.fill(0.0));
                                                 plot_ui.line(aux_line_2_2.fill(0.0));
@@ -2323,7 +2316,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_2_2);
                                             }
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) {
+                                        if en_aux1.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line.fill(0.0));
                                                 plot_ui.line(aux_line__2.fill(0.0));
@@ -2332,7 +2325,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line__2);
                                             }
                                         }
-                                        if en_main.load(Ordering::SeqCst) {
+                                        if en_main.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(line.fill(0.0));
                                                 plot_ui.line(line_2.fill(0.0));
@@ -2343,7 +2336,7 @@ Version 1.4.1");
                                         }
                                     }
                                     1 => {
-                                        if en_main.load(Ordering::SeqCst) {
+                                        if en_main.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(line.fill(0.0));
                                                 plot_ui.line(line_2.fill(0.0));
@@ -2352,7 +2345,7 @@ Version 1.4.1");
                                                 plot_ui.line(line_2);
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) {
+                                        if en_aux5.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_5.fill(0.0));
                                                 plot_ui.line(aux_line_5_2.fill(0.0));
@@ -2361,7 +2354,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_5_2);
                                             }
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) {
+                                        if en_aux4.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_4.fill(0.0));
                                                 plot_ui.line(aux_line_4_2.fill(0.0));
@@ -2370,7 +2363,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_4_2);
                                             }
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) {
+                                        if en_aux3.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_3.fill(0.0));
                                                 plot_ui.line(aux_line_3_2.fill(0.0));
@@ -2379,7 +2372,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_3_2);
                                             }
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) {
+                                        if en_aux2.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_2.fill(0.0));
                                                 plot_ui.line(aux_line_2_2.fill(0.0));
@@ -2388,7 +2381,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_2_2);
                                             }
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) {
+                                        if en_aux1.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line.fill(0.0));
                                                 plot_ui.line(aux_line__2.fill(0.0));
@@ -2399,7 +2392,7 @@ Version 1.4.1");
                                         }
                                     }
                                     2 => {
-                                        if en_aux1.load(Ordering::SeqCst) {
+                                        if en_aux1.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line.fill(0.0));
                                                 plot_ui.line(aux_line__2.fill(0.0));
@@ -2408,7 +2401,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line__2);
                                             }
                                         }
-                                        if en_main.load(Ordering::SeqCst) {
+                                        if en_main.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(line.fill(0.0));
                                                 plot_ui.line(line_2.fill(0.0));
@@ -2417,7 +2410,7 @@ Version 1.4.1");
                                                 plot_ui.line(line_2);
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) {
+                                        if en_aux5.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_5.fill(0.0));
                                                 plot_ui.line(aux_line_5_2.fill(0.0));
@@ -2426,7 +2419,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_5_2);
                                             }
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) {
+                                        if en_aux4.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_4.fill(0.0));
                                                 plot_ui.line(aux_line_4_2.fill(0.0));
@@ -2435,7 +2428,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_4_2);
                                             }
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) {
+                                        if en_aux3.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_3.fill(0.0));
                                                 plot_ui.line(aux_line_3_2.fill(0.0));
@@ -2444,7 +2437,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_3_2);
                                             }
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) {
+                                        if en_aux2.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_2.fill(0.0));
                                                 plot_ui.line(aux_line_2_2.fill(0.0));
@@ -2455,7 +2448,7 @@ Version 1.4.1");
                                         }
                                     }
                                     3 => {
-                                        if en_aux2.load(Ordering::SeqCst) {
+                                        if en_aux2.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_2.fill(0.0));
                                                 plot_ui.line(aux_line_2_2.fill(0.0));
@@ -2464,7 +2457,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_2_2);
                                             }
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) {
+                                        if en_aux1.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line.fill(0.0));
                                                 plot_ui.line(aux_line__2.fill(0.0));
@@ -2473,7 +2466,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line__2);
                                             }
                                         }
-                                        if en_main.load(Ordering::SeqCst) {
+                                        if en_main.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(line.fill(0.0));
                                                 plot_ui.line(line_2.fill(0.0));
@@ -2482,7 +2475,7 @@ Version 1.4.1");
                                                 plot_ui.line(line_2);
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) {
+                                        if en_aux5.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_5.fill(0.0));
                                                 plot_ui.line(aux_line_5_2.fill(0.0));
@@ -2491,7 +2484,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_5_2);
                                             }
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) {
+                                        if en_aux4.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_4.fill(0.0));
                                                 plot_ui.line(aux_line_4_2.fill(0.0));
@@ -2500,7 +2493,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_4_2);
                                             }
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) {
+                                        if en_aux3.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_3.fill(0.0));
                                                 plot_ui.line(aux_line_3_2.fill(0.0));
@@ -2511,7 +2504,7 @@ Version 1.4.1");
                                         }
                                     }
                                     4 => {
-                                        if en_aux3.load(Ordering::SeqCst) {
+                                        if en_aux3.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_3.fill(0.0));
                                                 plot_ui.line(aux_line_3_2.fill(0.0));
@@ -2520,7 +2513,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_3_2);
                                             }
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) {
+                                        if en_aux2.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_2.fill(0.0));
                                                 plot_ui.line(aux_line_2_2.fill(0.0));
@@ -2529,7 +2522,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_2_2);
                                             }
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) {
+                                        if en_aux1.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line.fill(0.0));
                                                 plot_ui.line(aux_line__2.fill(0.0));
@@ -2538,7 +2531,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line__2);
                                             }
                                         }
-                                        if en_main.load(Ordering::SeqCst) {
+                                        if en_main.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(line.fill(0.0));
                                                 plot_ui.line(line_2.fill(0.0));
@@ -2547,7 +2540,7 @@ Version 1.4.1");
                                                 plot_ui.line(line_2);
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) {
+                                        if en_aux5.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_5.fill(0.0));
                                                 plot_ui.line(aux_line_5_2.fill(0.0));
@@ -2556,7 +2549,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_5_2);
                                             }
                                         }
-                                        if en_aux4.load(Ordering::SeqCst) {
+                                        if en_aux4.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_4.fill(0.0));
                                                 plot_ui.line(aux_line_4_2.fill(0.0));
@@ -2567,7 +2560,7 @@ Version 1.4.1");
                                         }
                                     }
                                     5 => {
-                                        if en_aux4.load(Ordering::SeqCst) {
+                                        if en_aux4.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_4.fill(0.0));
                                                 plot_ui.line(aux_line_4_2.fill(0.0));
@@ -2576,7 +2569,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_4_2);
                                             }
                                         }
-                                        if en_aux3.load(Ordering::SeqCst) {
+                                        if en_aux3.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_3.fill(0.0));
                                                 plot_ui.line(aux_line_3_2.fill(0.0));
@@ -2585,7 +2578,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_3_2);
                                             }
                                         }
-                                        if en_aux2.load(Ordering::SeqCst) {
+                                        if en_aux2.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_2.fill(0.0));
                                                 plot_ui.line(aux_line_2_2.fill(0.0));
@@ -2594,7 +2587,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line_2_2);
                                             }
                                         }
-                                        if en_aux1.load(Ordering::SeqCst) {
+                                        if en_aux1.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line.fill(0.0));
                                                 plot_ui.line(aux_line__2.fill(0.0));
@@ -2603,7 +2596,7 @@ Version 1.4.1");
                                                 plot_ui.line(aux_line__2);
                                             }
                                         }
-                                        if en_main.load(Ordering::SeqCst) {
+                                        if en_main.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(line.fill(0.0));
                                                 plot_ui.line(line_2.fill(0.0));
@@ -2612,7 +2605,7 @@ Version 1.4.1");
                                                 plot_ui.line(line_2);
                                             }
                                         }
-                                        if en_aux5.load(Ordering::SeqCst) {
+                                        if en_aux5.load(Ordering::Relaxed) {
                                             if fill {
                                                 plot_ui.line(aux_line_5.fill(0.0));
                                                 plot_ui.line(aux_line_5_2.fill(0.0));
@@ -2629,7 +2622,7 @@ Version 1.4.1");
                                 // Draw our clipping guides if needed
                                 let clip_counter = is_clipping.load(Ordering::Relaxed);
                                 if clip_counter > 0.0 {
-                                    if stereo_view.load(Ordering::SeqCst) {
+                                    if stereo_view.load(Ordering::Relaxed) {
                                         plot_ui.hline(
                                             HLine::new(2.0)
                                                 .color(egui::Color32::RED)
@@ -2665,15 +2658,20 @@ Version 1.4.1");
                 });
                 // Floating buttons
                 if !show_analyzer.load(Ordering::Relaxed) {
-                    let mut stereo_switch_ui = ui.new_child(UiBuilder::new().max_rect(Rect { min: Pos2 { x: 740.0, y: 30.0 }, max: Pos2 { x: 1040.0, y: 40.0 } }));
+                    // Gated by nih_plug update
+                    //let mut stereo_switch_ui = ui.new_child(UiBuilder::new().max_rect(Rect { min: Pos2 { x: 740.0, y: 30.0 }, max: Pos2 { x: 1040.0, y: 40.0 } }));
+                    let mut stereo_switch_ui = ui.child_ui(
+                        Rect { min: Pos2 { x: 740.0, y: 30.0 },max: Pos2 { x: 1040.0, y: 40.0 } },
+                        Layout::centered_and_justified(egui::Direction::LeftToRight)
+                    );
                     stereo_switch_ui
                         .scope(|ui| {
                             ui.horizontal(|ui|{
                                 let checkstereo = slim_checkbox::AtomicSlimCheckbox::new(&stereo_view, "Stereo View");
                                 ui.add(checkstereo);
-                                let leftchannel = slim_checkbox::AtomicSlimCheckbox::new(&stereo_view, "Left Channel");
+                                let leftchannel = slim_checkbox::AtomicSlimCheckbox::new(&en_left_channel, "Left Channel");
                                 ui.add(leftchannel);
-                                let rightchanel = slim_checkbox::AtomicSlimCheckbox::new(&stereo_view, "Right Channel");
+                                let rightchanel = slim_checkbox::AtomicSlimCheckbox::new(&en_right_channel, "Right Channel");
                                 ui.add(rightchanel);
                             });
                         }).inner;

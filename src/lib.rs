@@ -15,7 +15,7 @@ mod slim_checkbox;
 mod scrollscope_gui;
 
 /**************************************************
- * Scrollscope v1.4.1 by Ardura - Optimized Version
+ * Scrollscope v1.4.2 by Ardura
  * "A simple scrolling Oscilloscope has become complex now"
  * ************************************************/
 
@@ -57,6 +57,13 @@ impl ChannelBuffer {
         if index < self.data.len() {
             self.data[index] = sample;
         }
+    }
+
+    fn zero_out(&mut self) {
+        for x in 0..self.data.len() {
+            self.data[x] = 0.0;
+        }
+        self.write_index = 0;
     }
 
     fn get_sample(&self, index: usize) -> Option<f32> {
@@ -133,16 +140,6 @@ impl OptimizedBuffer {
         }
     }
 
-    fn push_sample(&self, channel: usize, sample: f32) {
-        if channel >= NUM_CHANNELS {
-            return;
-        }
-
-        let buffer_len = self.internal_length.load(Ordering::Acquire);
-        let mut buffers = self.buffers.write().unwrap();
-        buffers[channel].push_sample(sample, buffer_len);
-    }
-
     fn update_sample(&self, channel: usize, index: usize, sample: f32) {
         if channel >= NUM_CHANNELS {
             return;
@@ -200,7 +197,7 @@ pub struct Scrollscope {
     params: Arc<ScrollscopeParams>,
 
     // Counter for scaling sample skipping - use a local counter to reduce atomic ops
-    skip_counter: Arc<AtomicI32>,
+    skip_counter: [Arc<AtomicI32>; 2],
     focused_line_toggle: Arc<AtomicU8>,
     is_clipping: Arc<AtomicF32>,
     direction: Arc<AtomicBool>,
@@ -232,6 +229,8 @@ pub struct Scrollscope {
 
     // Stereo view
     stereo_view: Arc<AtomicBool>,
+    en_left_channel: Arc<AtomicBool>,
+    en_right_channel: Arc<AtomicBool>,
 
     sample_rate: Arc<AtomicF32>,
     prev_skip: Arc<AtomicI32>,
@@ -271,7 +270,7 @@ impl Default for Scrollscope {
         
         Self {
             params: Arc::new(ScrollscopeParams::default()),
-            skip_counter: Arc::new(AtomicI32::new(0)),
+            skip_counter: [Arc::new(AtomicI32::new(0)), Arc::new(AtomicI32::new(0))],
             focused_line_toggle: Arc::new(AtomicU8::new(0)),
             direction: Arc::new(AtomicBool::new(false)),
             is_clipping: Arc::new(AtomicF32::new(0.0)),
@@ -286,6 +285,8 @@ impl Default for Scrollscope {
                 Arc::new(AtomicBool::new(false)), // aux_5
                 Arc::new(AtomicBool::new(true)),  // sum
             ],
+            en_left_channel: Arc::new(AtomicBool::new(true)),
+            en_right_channel: Arc::new(AtomicBool::new(true)),
 
             enable_sum: Arc::new(AtomicBool::new(true)),
             enable_guidelines: Arc::new(AtomicBool::new(true)),
@@ -362,7 +363,20 @@ impl Plugin for Scrollscope {
             main_input_channels: NonZeroU32::new(2),
             main_output_channels: NonZeroU32::new(2),
             aux_input_ports: &[new_nonzero_u32(2); 5],
-            ..AudioIOLayout::const_default()
+            aux_output_ports: &[],
+            names: PortNames {
+                layout: Option::None,
+                main_input: Some("Main Input"),
+                aux_inputs: &[
+                    "Aux 1",
+                    "Aux 2",
+                    "Aux 3",
+                    "Aux 4",
+                    "Aux 5",
+                ],
+                main_output: Option::None,
+                aux_outputs: &[]
+            }
         },
         AudioIOLayout {
             main_input_channels: NonZeroU32::new(1),
@@ -381,7 +395,7 @@ impl Plugin for Scrollscope {
         self.params.clone()
     }
 
-    fn editor(&mut self, async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+    fn editor(&self, async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         scrollscope_gui::make_gui(self, async_executor)
     }
 
@@ -433,8 +447,9 @@ impl Plugin for Scrollscope {
         }
         
         // Reset skip counter before processing
-        let mut local_skip_counter = 0;
-        self.skip_counter.store(0, Ordering::Relaxed);
+        let mut local_skip_counter = [0,0];
+        self.skip_counter[0].store(0, Ordering::Relaxed);
+        self.skip_counter[1].store(0, Ordering::Relaxed);
 
         // Determine whether to process in analyzer mode or oscilloscope mode
         if !self.show_analyzer.load(Ordering::Relaxed) {
@@ -446,7 +461,8 @@ impl Plugin for Scrollscope {
         }
         
         // Update the skip counter
-        self.skip_counter.store(local_skip_counter, Ordering::Relaxed);
+        self.skip_counter[0].store(local_skip_counter[0], Ordering::Relaxed);
+        self.skip_counter[1].store(local_skip_counter[1], Ordering::Relaxed);
         
         ProcessStatus::Normal
     }
@@ -455,7 +471,7 @@ impl Plugin for Scrollscope {
     const MIDI_OUTPUT: MidiConfig = MidiConfig::None;
     const HARD_REALTIME_ONLY: bool = false;
     
-    fn task_executor(&mut self) -> TaskExecutor<Self> {
+    fn task_executor(&self) -> TaskExecutor<Self> {
         Box::new(|_| ())
     }
     
@@ -468,10 +484,10 @@ impl Plugin for Scrollscope {
 impl Scrollscope {
     fn process_oscilloscope(
         &self,
-        buffer: &mut nih_plug::prelude::Buffer<'_>,
-        aux: &mut nih_plug::prelude::AuxiliaryBuffers<'_>,
+        buffer: &mut nih_plug::buffer::Buffer<'_>,
+        aux: &mut nih_plug::audio_setup::AuxiliaryBuffers<'_>,
         context: &mut impl ProcessContext<Self>,
-        skip_counter: &mut i32,
+        skip_counter: &mut [i32; 2],
     ) {
         // Get buffer slices for efficient processing
         let raw_buffer = buffer.as_slice_immutable();
@@ -523,18 +539,64 @@ impl Scrollscope {
                 let current_beat = context.transport().pos_beats().unwrap();
                 let temp_current_beat = (current_beat * 1000.0).round() / 1000.0;
                 
-                const EPSILON: f64 = 0.0001;
+                const EPSILON: f64 = 0.001;
                 match self.params.sync_timing.value() {
                     BeatSync::Bar => {
                         if (temp_current_beat % 4.0) < EPSILON {
                             in_place_idx = 0;
-                            *skip_counter = 0;
+                            skip_counter[0] = 0;
+                            skip_counter[1] = 0;
+                            let mut buffers = self.sample_buffer.buffers.write();
+                            for buff in buffers.iter_mut() {
+                                buff[0].zero_out();
+                                buff[1].zero_out();
+                                buff[2].zero_out();
+                                buff[3].zero_out();
+                                buff[4].zero_out();
+                                buff[5].zero_out();
+                                buff[6].zero_out();
+                                buff[7].zero_out();
+                            }
+                            let mut buffers = self.sample_buffer_2.buffers.write();
+                            for buff in buffers.iter_mut() {
+                                buff[0].zero_out();
+                                buff[1].zero_out();
+                                buff[2].zero_out();
+                                buff[3].zero_out();
+                                buff[4].zero_out();
+                                buff[5].zero_out();
+                                buff[6].zero_out();
+                                buff[7].zero_out();
+                            }
                         }
                     }
                     BeatSync::Beat => {
                         if (temp_current_beat % 1.0) < EPSILON {
                             in_place_idx = 0;
-                            *skip_counter = 0;
+                            skip_counter[0] = 0;
+                            skip_counter[1] = 0;
+                            let mut buffers = self.sample_buffer.buffers.write();
+                            for buff in buffers.iter_mut() {
+                                buff[0].zero_out();
+                                buff[1].zero_out();
+                                buff[2].zero_out();
+                                buff[3].zero_out();
+                                buff[4].zero_out();
+                                buff[5].zero_out();
+                                buff[6].zero_out();
+                                buff[7].zero_out();
+                            }
+                            let mut buffers = self.sample_buffer_2.buffers.write();
+                            for buff in buffers.iter_mut() {
+                                buff[0].zero_out();
+                                buff[1].zero_out();
+                                buff[2].zero_out();
+                                buff[3].zero_out();
+                                buff[4].zero_out();
+                                buff[5].zero_out();
+                                buff[6].zero_out();
+                                buff[7].zero_out();
+                            }
                         }
                     }
                 }
@@ -545,8 +607,12 @@ impl Scrollscope {
         if context.transport().playing {
             if alt_sync_active {
                 add_beat_line = is_on_beat;
-            } else if context.transport().pos_beats().unwrap() % 1.0 == 0.0 {
+                self.in_place_index.store(0, Ordering::SeqCst);
+            } else if ((context.transport().pos_beats().unwrap() * 1000.0).round() / 1000.0) % 1.0 == 0.0 {
                 add_beat_line = true;
+                if sync_active {
+                    self.in_place_index.store(0, Ordering::SeqCst);
+                }
             }
         }
         
@@ -556,14 +622,15 @@ impl Scrollscope {
             izip!(raw_buffer, aux_0, aux_1, aux_2, aux_3, aux_4, channels) {
             
             // Setup batch processing
-            let mut batch = Vec::with_capacity(100); // Pre-allocate to avoid reallocations
+            let mut l_batch = Vec::with_capacity(100); // Pre-allocate to avoid reallocations
+            let mut r_batch = Vec::with_capacity(100); // Pre-allocate to avoid reallocations
             
             // Process all samples in this channel
             for (sample, aux_sample_1, aux_sample_2, aux_sample_3, aux_sample_4, aux_sample_5) in 
                 izip!(b0.iter(), ax0.iter(), ax1.iter(), ax2.iter(), ax3.iter(), ax4.iter()) {
                 
                 // Only process samples according to h_scale parameter
-                if *skip_counter % h_scale == 0 {
+                if (channel == 0 && skip_counter[0] % h_scale == 0) || (channel == 1 && skip_counter[1] % h_scale == 0) {
                     // Apply gain to samples
                     let visual_main_sample = sample * current_gain;
                     
@@ -595,8 +662,6 @@ impl Scrollscope {
                             sum_sample += visual_aux_sample_5;
                         }
                     }
-                    // Add to batch
-                    batch.push((7, sum_sample));
                     
                     // Check for clipping
                     if visual_main_sample.abs() > 1.0 || 
@@ -606,21 +671,6 @@ impl Scrollscope {
                        visual_aux_sample_4.abs() > 1.0 || 
                        visual_aux_sample_5.abs() > 1.0 {
                         self.is_clipping.store(120.0, Ordering::Relaxed);
-                    }
-                    
-                    // Add beat line if needed (only on first channel)
-                    if channel == 0 && add_beat_line {
-                        if stereo_mode {
-                            batch.push((6, 2.1));
-                            batch.push((6, -2.1));
-                        } else {
-                            batch.push((6, 1.0));
-                            batch.push((6, -1.0));
-                        }
-                        add_beat_line = false; // Reset flag after adding
-                        self.add_beat_line.store(false, Ordering::Relaxed);
-                    } else if channel == 0 {
-                        batch.push((6, 0.0)); // Normal point for beat channel
                     }
                     
                     // Process based on sync mode
@@ -635,45 +685,109 @@ impl Scrollscope {
                             self.sample_buffer.update_sample(3, ipi_index, visual_aux_sample_3);
                             self.sample_buffer.update_sample(4, ipi_index, visual_aux_sample_4);
                             self.sample_buffer.update_sample(5, ipi_index, visual_aux_sample_5);
+                            //6 is beat lines
+                            if add_beat_line {
+                                if stereo_mode {
+                                    self.sample_buffer.update_sample(6, ipi_index, 2.1);
+                                    if ipi_index > 0 {
+                                        self.sample_buffer.update_sample(6, ipi_index - 1, -2.1);
+                                    } else {
+                                        self.sample_buffer.update_sample(6, ipi_index + 1, -2.1);
+                                    }
+                                } else {
+                                    self.sample_buffer.update_sample(6, ipi_index, 1.0);
+                                    if ipi_index > 0 {
+                                        self.sample_buffer.update_sample(6, ipi_index - 1, -1.0);
+                                    } else {
+                                        self.sample_buffer.update_sample(6, ipi_index + 1, -1.0);
+                                    }
+                                }
+                            }
+                            self.sample_buffer.update_sample(7, ipi_index, sum_sample);
+                        } 
+                        
+                        if self.sample_buffer_2.get_sample(0, ipi_index).is_some() {
+                            self.sample_buffer_2.update_sample(0, ipi_index, visual_main_sample);
+                            self.sample_buffer_2.update_sample(1, ipi_index, visual_aux_sample_1);
+                            self.sample_buffer_2.update_sample(2, ipi_index, visual_aux_sample_2);
+                            self.sample_buffer_2.update_sample(3, ipi_index, visual_aux_sample_3);
+                            self.sample_buffer_2.update_sample(4, ipi_index, visual_aux_sample_4);
+                            self.sample_buffer_2.update_sample(5, ipi_index, visual_aux_sample_5);
+                            //6 is beat lines
+                            self.sample_buffer_2.update_sample(7, ipi_index, sum_sample);
                         }
                         
-                        // Increment in-place index
-                        in_place_idx += 1;
+                        if channel == 1 {
+                            // Increment in-place index
+                            in_place_idx += 1;
+                        }
                     } else {
-                        // Normal scrolling mode - add samples to batch
-                        batch.push((0, visual_main_sample));
-                        batch.push((1, visual_aux_sample_1));
-                        batch.push((2, visual_aux_sample_2));
-                        batch.push((3, visual_aux_sample_3));
-                        batch.push((4, visual_aux_sample_4));
-                        batch.push((5, visual_aux_sample_5));
+                        if channel == 0 {
+                            // Add beat line if needed (only on first channel)
+                            if add_beat_line {
+                                if stereo_mode {
+                                    l_batch.push((6, 2.1));
+                                    l_batch.push((6, -2.1));
+                                } else {
+                                    l_batch.push((6, 1.0));
+                                    l_batch.push((6, -1.0));
+                                }
+
+                                add_beat_line = false; // Reset flag after adding
+                                self.add_beat_line.store(false, Ordering::Relaxed);
+                            } else {
+                                l_batch.push((6, 0.0)); // Normal point for beat channel
+                            }
+                            // Normal scrolling mode - add samples to batch
+                            l_batch.push((0, visual_main_sample));
+                            l_batch.push((1, visual_aux_sample_1));
+                            l_batch.push((2, visual_aux_sample_2));
+                            l_batch.push((3, visual_aux_sample_3));
+                            l_batch.push((4, visual_aux_sample_4));
+                            l_batch.push((5, visual_aux_sample_5));
+                            l_batch.push((7, sum_sample));
+                        } else {
+                            // Normal scrolling mode - add samples to batch
+                            r_batch.push((0, visual_main_sample));
+                            r_batch.push((1, visual_aux_sample_1));
+                            r_batch.push((2, visual_aux_sample_2));
+                            r_batch.push((3, visual_aux_sample_3));
+                            r_batch.push((4, visual_aux_sample_4));
+                            r_batch.push((5, visual_aux_sample_5));
+                            r_batch.push((7, sum_sample));
+                        }
                     }
                     
                     // Process batch if it's getting large
-                    if batch.len() >= 50 {
+                    if l_batch.len() >= 50 {
                         if channel == 0 {
-                            self.sample_buffer.push_samples(&batch);
-                        } else {
-                            self.sample_buffer_2.push_samples(&batch);
+                            self.sample_buffer.push_samples(&l_batch);
                         }
-                        batch.clear();
+                        l_batch.clear();
+                    }
+                    if r_batch.len() >= 50 {
+                        if channel == 1 {
+                            self.sample_buffer_2.push_samples(&r_batch);
+                        }
+                        r_batch.clear();
                     }
                 }
-                
-                // Increment skip counter
-                *skip_counter += 1;
+
+                skip_counter[channel] += 1;
             }
             
             // Process any remaining samples in batch
-            if !batch.is_empty() {
+            if !l_batch.is_empty() {
                 if channel == 0 {
-                    self.sample_buffer.push_samples(&batch);
-                } else {
-                    self.sample_buffer_2.push_samples(&batch);
+                    self.sample_buffer.push_samples(&l_batch);
+                }
+            }
+            if !r_batch.is_empty() {
+                if channel == 1 {
+                    self.sample_buffer_2.push_samples(&r_batch);
                 }
             }
         }
-        
         // Store updated in-place index
         self.in_place_index.store(in_place_idx, Ordering::Relaxed);
     }
@@ -682,7 +796,7 @@ impl Scrollscope {
         &self,
         buffer: &mut nih_plug::prelude::Buffer<'_>,
         aux: &mut nih_plug::prelude::AuxiliaryBuffers<'_>,
-        skip_counter: &mut i32,
+        skip_counter: &mut [i32; 2],
     ) {
         // Get buffer slices for efficient processing
         let raw_buffer = buffer.as_slice_immutable();
@@ -709,7 +823,7 @@ impl Scrollscope {
                 izip!(b0.iter(), ax0.iter(), ax1.iter(), ax2.iter(), ax3.iter(), ax4.iter()) {
                 
                 // Only process samples according to h_scale parameter
-                if *skip_counter % h_scale == 0 {
+                if (channel == 0 && skip_counter[0] % h_scale == 0) || (channel == 1 && skip_counter[1] % h_scale == 0) {
                     // Apply gain to samples
                     let visual_main_sample = sample * current_gain;
                     
@@ -748,11 +862,8 @@ impl Scrollscope {
                         batch.clear();
                     }
                 }
-                
-                if channel == 0 {
-                    // Increment skip counter
-                    *skip_counter += 1;
-                }
+
+                skip_counter[channel] += 1;
             }
             
             // Process any remaining samples in batch

@@ -17,12 +17,11 @@ crate-type = ["cdylib","lib"]
 atomic_float = "0.1"
 configparser = "3.0.4"
 dirs = "5.0.1"
-egui = "0.21.0"
-egui_plot = "0.31.0"
+#egui = "0.21.0"
+#egui_plot = "0.31.0"
 itertools = "0.12.1"
-# This is copied from Actuate, technically it could point to Robbert's Git too, doesn't matter
-nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "18ec34e9166c4dbe91ced06165d2940c23c30372", features = ["assert_process_allocs","standalone"] }
-nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "18ec34e9166c4dbe91ced06165d2940c23c30372" }
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "e59dc33aaf0c06c834dba0821f6e269e6377f362", features = ["assert_process_allocs","standalone"] }
+nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "e59dc33aaf0c06c834dba0821f6e269e6377f362" }
 rustfft = "6.2.0"
 
 [profile.release]

@@ -15,7 +15,7 @@ mod slim_checkbox;
 mod scrollscope_gui;
 
 /**************************************************
- * Scrollscope v1.4.2 by Ardura
+ * Scrollscope v1.4.3 by Ardura
  * "A simple scrolling Oscilloscope has become complex now"
  * ************************************************/
 

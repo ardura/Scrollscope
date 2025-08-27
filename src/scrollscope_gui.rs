@@ -4,16 +4,18 @@ use configparser::ini::Ini;
 use nih_plug::prelude::*;
 use nih_plug_egui::{
     create_egui_editor,
-    egui::{                                                                           //Not until new version of egui - gated by nih-plug update
+    egui::{                                                                           // CornerRadius Not until new version of egui - gated by nih-plug update
         self, epaint::{self}, plot::{HLine, Line, Plot, PlotPoints}, pos2, Align2, Color32, FontId, Layout, Pos2, Rect, Response, Rounding, Stroke
     },
     widgets,
 };
+// use egui_plot::{self, HLine, Line, Plot, PlotPoints};
 use rustfft::{num_complex::Complex, Fft, FftDirection};
 use std::{fs::File, io::Write, path::MAIN_SEPARATOR_STR, str::FromStr, sync::{atomic::Ordering, Arc}};
 use std::ops::RangeInclusive;
 use crate::{pivot_frequency_slope, slim_checkbox, Scrollscope};
 
+#[allow(unused_assignments)]
 pub(crate) fn make_gui(instance: &Scrollscope, _async_executor: AsyncExecutor<Scrollscope>) -> Option<Box<dyn Editor>> {
     let params = instance.params.clone();
     let samples = instance.sample_buffer.clone();
@@ -235,7 +237,7 @@ inactive_bg = 60,60,60");
                     ui.horizontal(|ui| {
                         ui.label("Scrollscope")
                             .on_hover_text("by Ardura with nih-plug and egui
-Version 1.4.2");
+Version 1.4.3");
                         ui.add(
                             widgets::ParamSlider::for_param(&params.free_gain, setter)
                                 .with_width(30.0),
@@ -2246,12 +2248,12 @@ Version 1.4.2");
                             .include_x(130.0)
                             .include_y(-y_scale)
                             .include_y(y_scale)
-                            .center_y_axis(true)
-                            .allow_zoom(false)
+                            //.center_y_axis(true)
+                            .allow_zoom(true)
                             .allow_scroll(true)
                             .height(480.0)
                             .width(1040.0)
-                            .allow_drag(false)
+                            .allow_drag(true)
                             // Blank out the X axis labels
                             .x_axis_formatter(|_, _range: &RangeInclusive<f64>| String::new())
                             .x_grid_spacer(move |_| {
@@ -2659,7 +2661,6 @@ Version 1.4.2");
                 // Floating buttons
                 if !show_analyzer.load(Ordering::Relaxed) {
                     // Gated by nih_plug update
-                    //let mut stereo_switch_ui = ui.new_child(UiBuilder::new().max_rect(Rect { min: Pos2 { x: 740.0, y: 30.0 }, max: Pos2 { x: 1040.0, y: 40.0 } }));
                     let mut stereo_switch_ui = ui.child_ui(
                         Rect { min: Pos2 { x: 740.0, y: 30.0 },max: Pos2 { x: 1040.0, y: 40.0 } },
                         Layout::centered_and_justified(egui::Direction::LeftToRight)
@@ -2675,6 +2676,17 @@ Version 1.4.2");
                                 ui.add(rightchanel);
                             });
                         }).inner;
+                    /*ui.scope_builder(
+                        egui::UiBuilder::new().max_rect(Rect { min: Pos2 { x: 740.0, y: 30.0 }, max: Pos2 { x: 1040.0, y: 40.0 } }),
+                        |ui|ui.horizontal(|ui|{
+                                let checkstereo = slim_checkbox::AtomicSlimCheckbox::new(&stereo_view, "Stereo View");
+                                ui.add(checkstereo);
+                                let leftchannel = slim_checkbox::AtomicSlimCheckbox::new(&en_left_channel, "Left Channel");
+                                ui.add(leftchannel);
+                                let rightchanel = slim_checkbox::AtomicSlimCheckbox::new(&en_right_channel, "Right Channel");
+                                ui.add(rightchanel);
+                            })
+                    );*/
                 }
             });
         },

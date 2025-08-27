@@ -93,6 +93,7 @@ impl<'a> Widget for AtomicSlimCheckbox<'a> {
             ui.painter().add(epaint::RectShape {
                 rect: big_icon_rect.expand(visuals.expansion),
                 //corner_radius: visuals.corner_radius,
+                rounding: Rounding::none(),
                 fill: visuals.bg_fill,
                 stroke: visuals.bg_stroke,
                 //fill_texture_id: TextureId::default(),
@@ -101,7 +102,6 @@ impl<'a> Widget for AtomicSlimCheckbox<'a> {
                 //stroke_kind: epaint::StrokeKind::Inside,
                 //round_to_pixels: Option::None,
                 //brush: Option::None,
-                rounding: Rounding::none(),
             });
 
             if checked.load(Ordering::SeqCst) {
@@ -191,13 +191,13 @@ impl<'a> Widget for SlimCheckbox<'a> {
             ui.painter().add(epaint::RectShape {
                 rect: big_icon_rect.expand(visuals.expansion),
                 //corner_radius: visuals.corner_radius,
+                rounding: Rounding::none(),
                 fill: visuals.bg_fill,
                 stroke: visuals.fg_stroke,
                 //blur_width: 0.0,
                 //stroke_kind: epaint::StrokeKind::Inside,
                 //round_to_pixels: Option::None,
                 //brush: Option::None,
-                rounding: Rounding::none()
             });
 
             if *checked {
